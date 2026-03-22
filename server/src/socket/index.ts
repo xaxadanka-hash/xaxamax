@@ -253,6 +253,30 @@ export function setupSocketHandlers(io: Server) {
       }
     });
 
+    // === WATCH TOGETHER (movie sync) ===
+    socket.on('movie:select', (data: { targetUserId: string; callId: string; movie: any }) => {
+      try {
+        const targetSockets = getUserSockets(data.targetUserId);
+        console.log(`🎬 movie:select ${userId} → ${data.targetUserId}`);
+        targetSockets.forEach((socketId) => {
+          io.to(socketId).emit('movie:select', { movie: data.movie, callId: data.callId, userId });
+        });
+      } catch (err) {
+        console.error('movie:select relay error:', err);
+      }
+    });
+
+    socket.on('movie:stop', (data: { targetUserId: string; callId: string }) => {
+      try {
+        const targetSockets = getUserSockets(data.targetUserId);
+        targetSockets.forEach((socketId) => {
+          io.to(socketId).emit('movie:stop', { callId: data.callId, userId });
+        });
+      } catch (err) {
+        console.error('movie:stop relay error:', err);
+      }
+    });
+
     // === JOIN CHAT ===
     socket.on('chat:join', (data: { chatId: string }) => {
       socket.join(`chat:${data.chatId}`);

@@ -2,9 +2,10 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuthStore } from '../../store/authStore';
 import { getSocket } from '../../services/socket';
 import {
-  Phone, PhoneOff, Video, VideoOff, Mic, MicOff, Monitor, MonitorOff,
-  Maximize2, Minimize2,
+  Phone, PhoneOff, Video, VideoOff, Mic, MicOff,
+  Maximize2, Minimize2, Film, X,
 } from 'lucide-react';
+import MovieSearch, { type TmdbMovie } from './MovieSearch';
 
 export type CallType = 'AUDIO' | 'VIDEO' | 'SCREEN_SHARE';
 
@@ -48,23 +49,18 @@ export default function CallModal() {
   const [call, setCall] = useState<CallState>(EMPTY_CALL);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
-  const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
   const [hasLocalStream, setHasLocalStream] = useState(false);
-  const [hasRemoteScreen, setHasRemoteScreen] = useState(false);
+  const [showMovieSearch, setShowMovieSearch] = useState(false);
+  const [watchMovie, setWatchMovie] = useState<TmdbMovie | null>(null);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
-  const screenStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
-  const remoteScreenStreamRef = useRef<MediaStream | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
-  const remoteScreenAudioRef = useRef<HTMLAudioElement>(null);
-  const remoteScreenRef = useRef<HTMLVideoElement>(null);
-  const mainRemoteStreamIdRef = useRef<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const iceCandidateQueue = useRef<RTCIceCandidateInit[]>([]);
   const callRef = useRef<CallState>(EMPTY_CALL);
@@ -99,31 +95,26 @@ export default function CallModal() {
       try { pcRef.current.close(); } catch (_) {}
       pcRef.current = null;
     }
-    [localStreamRef, screenStreamRef].forEach((ref) => {
-      if (ref.current) {
-        ref.current.getTracks().forEach((t) => t.stop());
-        ref.current = null;
-      }
-    });
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((t: MediaStreamTrack) => t.stop());
+      localStreamRef.current = null;
+    }
     remoteStreamRef.current = null;
-    remoteScreenStreamRef.current = null;
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     if (connTimeoutRef.current) { clearTimeout(connTimeoutRef.current); connTimeoutRef.current = null; }
     if (iceFailedTimeoutRef.current) { clearTimeout(iceFailedTimeoutRef.current); iceFailedTimeoutRef.current = null; }
-    [localVideoRef, remoteVideoRef, remoteScreenRef].forEach((ref) => {
+    [localVideoRef, remoteVideoRef].forEach((ref) => {
       if (ref.current) ref.current.srcObject = null;
     });
     if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
-    if (remoteScreenAudioRef.current) remoteScreenAudioRef.current.srcObject = null;
-    mainRemoteStreamIdRef.current = null;
     iceCandidateQueue.current = [];
     setCallDuration(0);
     setIsMuted(false);
     setIsVideoOff(false);
-    setIsScreenSharing(false);
     setIsFullscreen(false);
     setHasLocalStream(false);
-    setHasRemoteScreen(false);
+    setShowMovieSearch(false);
+    setWatchMovie(null);
   }, []);
 
   const endCall = useCallback((emitEvent: 'call:end' | 'call:decline' = 'call:end') => {
@@ -159,60 +150,16 @@ export default function CallModal() {
       log('ICE candidate error:', e?.url, e?.errorText);
     };
 
-    // Track handler — route by stream ID, not track properties
-    // First stream = camera/mic (main). Any different stream ID = screen share.
-    // This avoids the race condition where screen audio arrives before screen video
-    // and gets misclassified as mic audio (displaySurface only works on video tracks).
+    // Track handler — simple: all remote tracks go to main stream (no screen share)
     pc.ontrack = (e) => {
       if (endedRef.current) return;
       if (!e.streams?.[0]) return;
       const stream = e.streams[0];
-      const track = e.track;
-      const streamId = stream.id;
+      log('ontrack:', e.track.kind, 'label:', e.track.label);
 
-      log('ontrack:', track.kind, 'label:', track.label, 'streamId:', streamId,
-        'mainStreamId:', mainRemoteStreamIdRef.current);
-
-      // First stream we ever receive = camera/mic (main)
-      if (!mainRemoteStreamIdRef.current) {
-        mainRemoteStreamIdRef.current = streamId;
-        log('Main stream set:', streamId);
-      }
-
-      const isMainStream = streamId === mainRemoteStreamIdRef.current;
-
-      if (isMainStream) {
-        // Camera/mic stream — always route to main elements
-        remoteStreamRef.current = stream;
-        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
-        if (remoteAudioRef.current) remoteAudioRef.current.srcObject = stream;
-      } else {
-        // Different stream ID = screen share (video + audio)
-        log('Screen share stream detected:', streamId);
-        if (track.kind === 'video') {
-          remoteScreenStreamRef.current = stream;
-          setHasRemoteScreen(true);
-          if (remoteScreenRef.current) remoteScreenRef.current.srcObject = stream;
-        }
-        if (track.kind === 'audio') {
-          // Screen audio → separate element (never touch mic audio)
-          if (remoteScreenAudioRef.current) remoteScreenAudioRef.current.srcObject = stream;
-        }
-      }
-
-      // When remote screen share track ends → clear screen elements
-      track.onended = () => {
-        if (streamId !== mainRemoteStreamIdRef.current) {
-          if (track.kind === 'video') {
-            remoteScreenStreamRef.current = null;
-            setHasRemoteScreen(false);
-            if (remoteScreenRef.current) remoteScreenRef.current.srcObject = null;
-          }
-          if (track.kind === 'audio') {
-            if (remoteScreenAudioRef.current) remoteScreenAudioRef.current.srcObject = null;
-          }
-        }
-      };
+      remoteStreamRef.current = stream;
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
+      if (remoteAudioRef.current) remoteAudioRef.current.srcObject = stream;
     };
 
     // onnegotiationneeded — BOTH peers can renegotiate (perfect negotiation pattern)
@@ -362,22 +309,13 @@ export default function CallModal() {
   // ─── LOCAL MEDIA ──────────────────────────────────────────
   const getLocalStream = useCallback(async (type: CallType) => {
     try {
-      if (type === 'SCREEN_SHARE') {
-        const screen = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-        screenStreamRef.current = screen;
-        const audio = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const combined = new MediaStream([...screen.getVideoTracks(), ...audio.getAudioTracks()]);
-        localStreamRef.current = combined;
-        screen.getVideoTracks()[0].onended = () => stopScreenShare();
-      } else {
-        const constraints: MediaStreamConstraints = {
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-          video: type === 'VIDEO'
-            ? { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: 'user' }
-            : false,
-        };
-        localStreamRef.current = await navigator.mediaDevices.getUserMedia(constraints);
-      }
+      const constraints: MediaStreamConstraints = {
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: type === 'VIDEO'
+          ? { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: 'user' }
+          : false,
+      };
+      localStreamRef.current = await navigator.mediaDevices.getUserMedia(constraints);
       if (localVideoRef.current && localStreamRef.current) {
         localVideoRef.current.srcObject = localStreamRef.current;
       }
@@ -438,51 +376,26 @@ export default function CallModal() {
     }
   };
 
-  // Screen share: adds as separate stream (mirotalk: separate localScreenMediaStream)
-  const toggleScreenShare = async () => {
-    if (isScreenSharing) {
-      stopScreenShare();
-    } else {
-      try {
-        const screen = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-        screenStreamRef.current = screen;
-        const screenTrack = screen.getVideoTracks()[0];
-
-        // Add as separate track/stream — keeps camera track, triggers onnegotiationneeded
-        if (pcRef.current && screenTrack) {
-          pcRef.current.addTrack(screenTrack, screen);
-        }
-        // Also add screen audio if available
-        screen.getAudioTracks().forEach((t) => {
-          pcRef.current?.addTrack(t, screen);
-        });
-
-        screenTrack.onended = () => stopScreenShare();
-        setIsScreenSharing(true);
-        if (localVideoRef.current) localVideoRef.current.srcObject = screen;
-      } catch (err) {
-        logErr('toggleScreenShare error:', err);
-      }
+  // ─── WATCH TOGETHER ─────────────────────────────────────
+  const selectMovie = useCallback((movie: TmdbMovie) => {
+    setWatchMovie(movie);
+    setShowMovieSearch(false);
+    const socket = getSocket();
+    const c = callRef.current;
+    if (c.callId && c.remoteUserId) {
+      socket?.emit('movie:select', { callId: c.callId, targetUserId: c.remoteUserId, movie });
     }
-  };
+    log('Movie selected:', movie.title, 'tmdbId:', movie.id);
+  }, []);
 
-  const stopScreenShare = () => {
-    if (screenStreamRef.current && pcRef.current) {
-      const screenTracks = screenStreamRef.current.getTracks();
-      // Remove from PC senders (triggers onnegotiationneeded → renegotiation)
-      pcRef.current.getSenders().forEach((sender) => {
-        if (sender.track && screenTracks.includes(sender.track)) {
-          try { pcRef.current?.removeTrack(sender); } catch (_) {}
-        }
-      });
-      screenTracks.forEach((t) => t.stop());
-      screenStreamRef.current = null;
+  const stopMovie = useCallback(() => {
+    setWatchMovie(null);
+    const socket = getSocket();
+    const c = callRef.current;
+    if (c.callId && c.remoteUserId) {
+      socket?.emit('movie:stop', { callId: c.callId, targetUserId: c.remoteUserId });
     }
-    if (localVideoRef.current && localStreamRef.current) {
-      localVideoRef.current.srcObject = localStreamRef.current;
-    }
-    setIsScreenSharing(false);
-  };
+  }, []);
 
   // ─── SOCKET EVENTS ────────────────────────────────────────
   useEffect(() => {
@@ -661,6 +574,17 @@ export default function CallModal() {
       setCall(EMPTY_CALL);
     };
 
+    // Watch Together: remote peer selected/stopped movie
+    const onMovieSelect = (data: { movie: TmdbMovie }) => {
+      log('movie:select received', data.movie.title);
+      setWatchMovie(data.movie);
+      setShowMovieSearch(false);
+    };
+    const onMovieStop = () => {
+      log('movie:stop received');
+      setWatchMovie(null);
+    };
+
     socket.on('call:initiated', onCallInitiated);
     socket.on('call:incoming', onIncomingCall);
     socket.on('call:accepted', onCallAccepted);
@@ -669,6 +593,8 @@ export default function CallModal() {
     socket.on('webrtc:ice-candidate', onIceCandidate);
     socket.on('call:ended', onCallEnded);
     socket.on('call:declined', onCallDeclined);
+    socket.on('movie:select', onMovieSelect);
+    socket.on('movie:stop', onMovieStop);
 
     return () => {
       socket.off('call:initiated', onCallInitiated);
@@ -679,6 +605,8 @@ export default function CallModal() {
       socket.off('webrtc:ice-candidate', onIceCandidate);
       socket.off('call:ended', onCallEnded);
       socket.off('call:declined', onCallDeclined);
+      socket.off('movie:select', onMovieSelect);
+      socket.off('movie:stop', onMovieStop);
     };
   }, [cleanup, createPeerConnection, getLocalStream, flushIceCandidates, endCall]);
 
@@ -719,8 +647,6 @@ export default function CallModal() {
   }, [handleInitiateCall]);
 
   // ─── SYNC STREAMS TO DOM ───────────────────────────────────
-  // ontrack fires BEFORE isConnected, so video elements may not exist yet.
-  // These effects re-assign srcObject when elements mount or streams change.
   useEffect(() => {
     if (remoteVideoRef.current && remoteStreamRef.current) {
       remoteVideoRef.current.srcObject = remoteStreamRef.current;
@@ -732,12 +658,6 @@ export default function CallModal() {
       remoteAudioRef.current.srcObject = remoteStreamRef.current;
     }
   }, [call.isConnected]);
-
-  useEffect(() => {
-    if (remoteScreenRef.current && remoteScreenStreamRef.current) {
-      remoteScreenRef.current.srcObject = remoteScreenStreamRef.current;
-    }
-  }, [hasRemoteScreen]);
 
   useEffect(() => {
     if (localVideoRef.current && localStreamRef.current) {
@@ -759,42 +679,75 @@ export default function CallModal() {
   if (!call.isActive) return null;
 
   const showVideo = call.type !== 'AUDIO';
+  const isWatching = !!watchMovie;
 
   return (
-    <div className={`fixed inset-0 z-50 bg-dark-950/95 backdrop-blur-sm flex flex-col items-center justify-center ${isFullscreen ? '' : 'p-4'}`}>
-      {/* Hidden audio elements — ALWAYS rendered so audio plays even before isConnected */}
+    <div className={`fixed inset-0 z-50 bg-dark-950/95 backdrop-blur-sm flex flex-col ${isFullscreen ? '' : 'p-4'}`}>
+      {/* Hidden audio — ALWAYS rendered */}
       <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
-      <audio ref={remoteScreenAudioRef} autoPlay playsInline className="hidden" />
 
-      {/* Remote video / Avatar */}
-      <div className="relative flex-1 w-full max-w-4xl flex items-center justify-center overflow-hidden">
-        {showVideo && call.isConnected ? (
-          <div className="relative w-full h-full flex items-center justify-center">
-            {/* Remote screen share — main view when active */}
-            {hasRemoteScreen && (
-              <video
-                ref={remoteScreenRef}
-                autoPlay
-                playsInline
-                className="w-full h-full max-h-[70vh] object-contain rounded-2xl bg-dark-900"
+      {/* Movie search overlay */}
+      {showMovieSearch && (
+        <MovieSearch onSelect={selectMovie} onClose={() => setShowMovieSearch(false)} />
+      )}
+
+      {/* ── MAIN CONTENT ── */}
+      <div className="relative flex-1 w-full flex items-center justify-center overflow-hidden">
+
+        {/* WATCH TOGETHER MODE: movie iframe + 2 camera PiPs */}
+        {isWatching && call.isConnected ? (
+          <div className="relative w-full h-full flex flex-col">
+            {/* Movie title bar */}
+            <div className="flex items-center gap-3 px-4 py-2 bg-dark-900/80">
+              <Film className="w-5 h-5 text-primary-400" />
+              <p className="text-sm text-white font-medium flex-1 truncate">{watchMovie.title}</p>
+              <button onClick={stopMovie} className="p-1 rounded-full hover:bg-dark-700 text-dark-400 hover:text-white transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            {/* VidSrc iframe */}
+            <div className="flex-1 relative bg-black rounded-xl overflow-hidden mx-2">
+              <iframe
+                src={`https://vidsrc.cc/v3/embed/movie/${watchMovie.id}?autoPlay=true`}
+                className="w-full h-full absolute inset-0"
+                allowFullScreen
+                allow="autoplay; fullscreen; encrypted-media"
+                referrerPolicy="origin"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
               />
-            )}
-            {/* Remote camera — main view normally, PiP when screen share active */}
-            <div className={hasRemoteScreen
-              ? 'absolute top-4 right-4 w-40 h-28 rounded-xl overflow-hidden border-2 border-dark-600 shadow-2xl bg-dark-900 z-10'
-              : 'w-full h-full flex items-center justify-center'
-            }>
-              <video
-                ref={remoteVideoRef}
-                autoPlay
-                playsInline
-                className={hasRemoteScreen
-                  ? 'w-full h-full object-cover'
-                  : 'w-full h-full max-h-[70vh] object-contain rounded-2xl bg-dark-900'
-                }
-              />
+              {/* Remote camera PiP — top right */}
+              {showVideo && (
+                <div className="absolute top-3 right-3 w-36 h-24 rounded-xl overflow-hidden border-2 border-dark-600/80 shadow-2xl bg-dark-900 z-10">
+                  <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
+                </div>
+              )}
+              {/* Local camera PiP — bottom right */}
+              {showVideo && hasLocalStream && (
+                <div className="absolute bottom-3 right-3 w-28 h-20 rounded-xl overflow-hidden border-2 border-primary-500/50 shadow-2xl bg-dark-900 z-10">
+                  <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+                </div>
+              )}
             </div>
           </div>
+
+        /* NORMAL VIDEO CALL MODE */
+        ) : showVideo && call.isConnected ? (
+          <div className="relative w-full h-full max-w-4xl flex items-center justify-center">
+            <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              className="w-full h-full max-h-[70vh] object-contain rounded-2xl bg-dark-900"
+            />
+            {/* Local PiP */}
+            {hasLocalStream && (
+              <div className="absolute bottom-4 right-4 w-36 h-24 rounded-xl overflow-hidden border-2 border-dark-600 shadow-2xl bg-dark-900 z-10">
+                <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+              </div>
+            )}
+          </div>
+
+        /* CONNECTING / AUDIO CALL / INCOMING */
         ) : (
           <div className="flex flex-col items-center gap-4">
             <div className="w-32 h-32 rounded-full bg-primary-600/30 flex items-center justify-center text-4xl font-bold text-primary-300 overflow-hidden">
@@ -808,31 +761,19 @@ export default function CallModal() {
             </p>
           </div>
         )}
-
-        {/* Local PiP */}
-        {showVideo && hasLocalStream && call.isConnected && (
-          <div className="absolute bottom-4 right-4 w-36 h-24 rounded-xl overflow-hidden border-2 border-dark-600 shadow-2xl bg-dark-900 z-10">
-            <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
-          </div>
-        )}
       </div>
 
-      {/* Duration — audio only */}
-      {call.isConnected && !showVideo && (
-        <p className="text-primary-400 text-lg font-mono">{formatDuration(callDuration)}</p>
-      )}
-
-      {/* Duration — video */}
-      {call.isConnected && showVideo && (
+      {/* Duration bar */}
+      {call.isConnected && (
         <div className="text-center py-2">
-          <p className="text-white font-medium">{call.remoteUser?.displayName}</p>
-          <p className="text-dark-400 text-sm">{formatDuration(callDuration)}</p>
+          <p className="text-white font-medium text-sm">{call.remoteUser?.displayName}</p>
+          <p className="text-dark-400 text-xs font-mono">{formatDuration(callDuration)}</p>
         </div>
       )}
 
       {/* Incoming call buttons */}
       {call.isIncoming && (
-        <div className="flex items-center gap-8 py-8">
+        <div className="flex items-center justify-center gap-8 py-8">
           <div className="flex flex-col items-center gap-2">
             <button onClick={rejectCall} className="w-16 h-16 rounded-full bg-red-500 flex items-center justify-center hover:bg-red-600 transition-colors shadow-lg shadow-red-500/30">
               <PhoneOff className="w-7 h-7 text-white" />
@@ -850,7 +791,7 @@ export default function CallModal() {
 
       {/* Active call controls */}
       {!call.isIncoming && (
-        <div className="flex items-center gap-3 py-6">
+        <div className="flex items-center justify-center gap-3 py-4">
           <button onClick={toggleMute}
             className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors ${isMuted ? 'bg-red-500/20 text-red-400' : 'bg-dark-800 text-white hover:bg-dark-700'}`}>
             {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
@@ -861,10 +802,13 @@ export default function CallModal() {
               {isVideoOff ? <VideoOff className="w-5 h-5" /> : <Video className="w-5 h-5" />}
             </button>
           )}
-          <button onClick={toggleScreenShare}
-            className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors ${isScreenSharing ? 'bg-primary-500/20 text-primary-400' : 'bg-dark-800 text-white hover:bg-dark-700'}`}>
-            {isScreenSharing ? <MonitorOff className="w-5 h-5" /> : <Monitor className="w-5 h-5" />}
-          </button>
+          {/* Watch Together button */}
+          {call.isConnected && (
+            <button onClick={() => setShowMovieSearch(true)}
+              className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors ${isWatching ? 'bg-primary-500/20 text-primary-400' : 'bg-dark-800 text-white hover:bg-dark-700'}`}>
+              <Film className="w-5 h-5" />
+            </button>
+          )}
           <button onClick={() => setIsFullscreen(!isFullscreen)}
             className="w-12 h-12 rounded-full bg-dark-800 text-white hover:bg-dark-700 flex items-center justify-center transition-colors">
             {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
