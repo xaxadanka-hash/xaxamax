@@ -80,6 +80,12 @@ export default function ChatView({ onBack }: ChatViewProps) {
     const otherMember = activeChat.members.find((m) => m.userId !== user?.id);
     if (!otherMember) return;
     const socket = getSocket();
+    // Show call UI immediately
+    const initiate = (window as any).__xaxamaxInitiateCall;
+    if (initiate) {
+      initiate(otherMember.userId, type, otherMember.user);
+    }
+    // Tell server to create the call and notify the other user
     socket?.emit('call:initiate', { targetUserId: otherMember.userId, type });
   };
 

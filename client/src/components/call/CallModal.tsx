@@ -3,7 +3,7 @@ import { useAuthStore } from '../../store/authStore';
 import { getSocket } from '../../services/socket';
 import {
   Phone, PhoneOff, Video, VideoOff, Mic, MicOff, Monitor, MonitorOff,
-  X, Maximize2, Minimize2,
+  Maximize2, Minimize2,
 } from 'lucide-react';
 
 export type CallType = 'AUDIO' | 'VIDEO' | 'SCREEN_SHARE';
@@ -14,6 +14,7 @@ interface CallState {
   isConnected: boolean;
   callId: string | null;
   type: CallType;
+  remoteUserId: string | null;
   remoteUser: { id: string; displayName: string; avatar: string | null } | null;
 }
 
@@ -24,17 +25,20 @@ const ICE_SERVERS: RTCConfiguration = {
   ],
 };
 
+const EMPTY_CALL: CallState = {
+  isActive: false, isIncoming: false, isConnected: false,
+  callId: null, type: 'AUDIO', remoteUserId: null, remoteUser: null,
+};
+
 export default function CallModal() {
   const { user } = useAuthStore();
-  const [call, setCall] = useState<CallState>({
-    isActive: false, isIncoming: false, isConnected: false,
-    callId: null, type: 'AUDIO', remoteUser: null,
-  });
+  const [call, setCall] = useState<CallState>(EMPTY_CALL);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
+  const [hasLocalStream, setHasLocalStream] = useState(false);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -42,9 +46,19 @@ export default function CallModal() {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const iceCandidateQueue = useRef<RTCIceCandidateInit[]>([]);
+  const callRef = useRef<CallState>(EMPTY_CALL);
+  const endedRef = useRef(false);
+
+  // Keep ref in sync with state
+  useEffect(() => { callRef.current = call; }, [call]);
 
   const cleanup = useCallback(() => {
+    endedRef.current = true;
     if (pcRef.current) {
+      pcRef.current.onicecandidate = null;
+      pcRef.current.ontrack = null;
+      pcRef.current.onconnectionstatechange = null;
       pcRef.current.close();
       pcRef.current = null;
     }
@@ -62,21 +76,27 @@ export default function CallModal() {
     }
     if (localVideoRef.current) localVideoRef.current.srcObject = null;
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+    iceCandidateQueue.current = [];
     setCallDuration(0);
     setIsMuted(false);
     setIsVideoOff(false);
     setIsScreenSharing(false);
     setIsFullscreen(false);
+    setHasLocalStream(false);
   }, []);
 
-  const createPeerConnection = useCallback(() => {
+  const createPeerConnection = useCallback((remoteUserId: string, callId: string) => {
+    if (pcRef.current) {
+      pcRef.current.close();
+    }
     const pc = new RTCPeerConnection(ICE_SERVERS);
     const socket = getSocket();
 
     pc.onicecandidate = (e) => {
-      if (e.candidate && call.callId) {
+      if (e.candidate) {
         socket?.emit('webrtc:ice-candidate', {
-          callId: call.callId,
+          callId,
+          targetUserId: remoteUserId,
           candidate: e.candidate,
         });
       }
@@ -91,25 +111,31 @@ export default function CallModal() {
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'connected') {
         setCall((prev) => ({ ...prev, isConnected: true }));
-        timerRef.current = setInterval(() => {
-          setCallDuration((d) => d + 1);
-        }, 1000);
+        if (!timerRef.current) {
+          timerRef.current = setInterval(() => {
+            setCallDuration((d) => d + 1);
+          }, 1000);
+        }
       }
       if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-        hangUp();
+        if (!endedRef.current) {
+          endedRef.current = true;
+          const cid = callRef.current.callId;
+          if (cid) socket?.emit('call:end', { callId: cid });
+          cleanup();
+          setCall(EMPTY_CALL);
+        }
       }
     };
 
     pcRef.current = pc;
     return pc;
-  }, [call.callId]);
+  }, [cleanup]);
 
   const getLocalStream = useCallback(async (type: CallType) => {
     try {
       if (type === 'SCREEN_SHARE') {
-        const screen = await navigator.mediaDevices.getDisplayMedia({
-          video: true, audio: true,
-        });
+        const screen = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
         screenStreamRef.current = screen;
         const audio = await navigator.mediaDevices.getUserMedia({ audio: true });
         const combined = new MediaStream([
@@ -117,10 +143,7 @@ export default function CallModal() {
           ...audio.getAudioTracks(),
         ]);
         localStreamRef.current = combined;
-
-        screen.getVideoTracks()[0].onended = () => {
-          stopScreenShare();
-        };
+        screen.getVideoTracks()[0].onended = () => stopScreenShare();
       } else {
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: true,
@@ -128,11 +151,10 @@ export default function CallModal() {
         });
         localStreamRef.current = stream;
       }
-
       if (localVideoRef.current && localStreamRef.current) {
         localVideoRef.current.srcObject = localStreamRef.current;
       }
-
+      setHasLocalStream(true);
       return localStreamRef.current;
     } catch (err) {
       console.error('Get media error:', err);
@@ -140,60 +162,38 @@ export default function CallModal() {
     }
   }, []);
 
-  const startCall = useCallback(async (targetUserId: string, type: CallType) => {
-    const stream = await getLocalStream(type);
-    if (!stream) return;
-
-    const pc = createPeerConnection();
-    stream.getTracks().forEach((t) => pc.addTrack(t, stream));
-
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-
-    const socket = getSocket();
-    socket?.emit('webrtc:offer', {
-      callId: call.callId,
-      targetUserId,
-      offer,
-      type,
-    });
-  }, [call.callId, createPeerConnection, getLocalStream]);
-
-  const answerCall = useCallback(async () => {
-    const stream = await getLocalStream(call.type);
-    if (!stream) return;
-
-    const pc = createPeerConnection();
-    stream.getTracks().forEach((t) => pc.addTrack(t, stream));
-
-    setCall((prev) => ({ ...prev, isIncoming: false }));
-    const socket = getSocket();
-    socket?.emit('call:accept', { callId: call.callId });
-  }, [call.callId, call.type, createPeerConnection, getLocalStream]);
+  const flushIceCandidates = useCallback(async () => {
+    const pc = pcRef.current;
+    if (!pc || !pc.remoteDescription) return;
+    while (iceCandidateQueue.current.length > 0) {
+      const candidate = iceCandidateQueue.current.shift()!;
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (err) {
+        console.error('ICE candidate error:', err);
+      }
+    }
+  }, []);
 
   const hangUp = useCallback(() => {
+    if (endedRef.current) return;
+    endedRef.current = true;
     const socket = getSocket();
-    if (call.callId) {
-      socket?.emit('call:end', { callId: call.callId });
-    }
+    const cid = callRef.current.callId;
+    if (cid) socket?.emit('call:end', { callId: cid });
     cleanup();
-    setCall({
-      isActive: false, isIncoming: false, isConnected: false,
-      callId: null, type: 'AUDIO', remoteUser: null,
-    });
-  }, [call.callId, cleanup]);
+    setCall(EMPTY_CALL);
+  }, [cleanup]);
 
   const rejectCall = useCallback(() => {
+    if (endedRef.current) return;
+    endedRef.current = true;
     const socket = getSocket();
-    if (call.callId) {
-      socket?.emit('call:reject', { callId: call.callId });
-    }
+    const cid = callRef.current.callId;
+    if (cid) socket?.emit('call:decline', { callId: cid });
     cleanup();
-    setCall({
-      isActive: false, isIncoming: false, isConnected: false,
-      callId: null, type: 'AUDIO', remoteUser: null,
-    });
-  }, [call.callId, cleanup]);
+    setCall(EMPTY_CALL);
+  }, [cleanup]);
 
   const toggleMute = () => {
     if (localStreamRef.current) {
@@ -203,26 +203,21 @@ export default function CallModal() {
   };
 
   const toggleVideo = async () => {
-    if (localStreamRef.current) {
-      const videoTracks = localStreamRef.current.getVideoTracks();
-      if (videoTracks.length > 0) {
-        videoTracks.forEach((t) => { t.enabled = !t.enabled; });
-        setIsVideoOff(!isVideoOff);
-      } else {
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
-          stream.getVideoTracks().forEach((t) => {
-            localStreamRef.current?.addTrack(t);
-            pcRef.current?.getSenders().forEach((s) => {
-              if (s.track?.kind === 'video') s.replaceTrack(t);
-              else if (!s.track) pcRef.current?.addTrack(t, localStreamRef.current!);
-            });
-          });
-          if (localVideoRef.current) localVideoRef.current.srcObject = localStreamRef.current;
-          setIsVideoOff(false);
-        } catch (err) {
-          console.error('Toggle video error:', err);
-        }
+    if (!localStreamRef.current) return;
+    const videoTracks = localStreamRef.current.getVideoTracks();
+    if (videoTracks.length > 0) {
+      videoTracks.forEach((t) => { t.enabled = !t.enabled; });
+      setIsVideoOff((v) => !v);
+    } else {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
+        const track = stream.getVideoTracks()[0];
+        localStreamRef.current.addTrack(track);
+        pcRef.current?.addTrack(track, localStreamRef.current);
+        if (localVideoRef.current) localVideoRef.current.srcObject = localStreamRef.current;
+        setIsVideoOff(false);
+      } catch (err) {
+        console.error('Toggle video error:', err);
       }
     }
   };
@@ -235,18 +230,11 @@ export default function CallModal() {
         const screen = await navigator.mediaDevices.getDisplayMedia({ video: true });
         screenStreamRef.current = screen;
         const videoTrack = screen.getVideoTracks()[0];
-
         const sender = pcRef.current?.getSenders().find((s) => s.track?.kind === 'video');
-        if (sender) {
-          await sender.replaceTrack(videoTrack);
-        }
-
+        if (sender) await sender.replaceTrack(videoTrack);
         videoTrack.onended = () => stopScreenShare();
         setIsScreenSharing(true);
-
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = screen;
-        }
+        if (localVideoRef.current) localVideoRef.current.srcObject = screen;
       } catch (err) {
         console.error('Screen share error:', err);
       }
@@ -269,40 +257,92 @@ export default function CallModal() {
     setIsScreenSharing(false);
   };
 
-  // Socket event listeners
+  // === SOCKET EVENT LISTENERS ===
   useEffect(() => {
     const socket = getSocket();
     if (!socket) return;
 
-    const onIncomingCall = (data: { callId: string; type: CallType; caller: { id: string; displayName: string; avatar: string | null } }) => {
+    // CALLER: receives callId after initiating
+    const onCallInitiated = (data: { callId: string }) => {
+      setCall((prev) => ({ ...prev, callId: data.callId }));
+    };
+
+    // CALLEE: receives incoming call
+    const onIncomingCall = (data: {
+      callId: string; type: CallType;
+      caller: { id: string; displayName: string; avatar: string | null };
+    }) => {
+      if (callRef.current.isActive) return; // already in a call
+      endedRef.current = false;
       setCall({
         isActive: true, isIncoming: true, isConnected: false,
-        callId: data.callId, type: data.type, remoteUser: data.caller,
+        callId: data.callId, type: data.type,
+        remoteUserId: data.caller.id, remoteUser: data.caller,
       });
     };
 
-    const onCallAccepted = async (data: { callId: string }) => {
-      setCall((prev) => ({ ...prev, isIncoming: false }));
+    // CALLER: callee accepted → get media and send offer
+    const onCallAccepted = async (data: { callId: string; userId: string }) => {
+      const c = callRef.current;
+      if (!c.isActive || c.callId !== data.callId) return;
+
+      const remoteUid = data.userId;
+      setCall((prev) => ({ ...prev, isIncoming: false, remoteUserId: remoteUid }));
+
+      const stream = await getLocalStream(c.type);
+      if (!stream) return;
+
+      const pc = createPeerConnection(remoteUid, data.callId);
+      stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      socket.emit('webrtc:offer', {
+        callId: data.callId,
+        targetUserId: remoteUid,
+        offer,
+      });
     };
 
-    const onOffer = async (data: { callId: string; offer: RTCSessionDescriptionInit; from: string }) => {
+    // CALLEE: receives offer from caller → create answer
+    const onOffer = async (data: {
+      callId: string; offer: RTCSessionDescriptionInit; userId: string;
+    }) => {
+      const c = callRef.current;
+      if (!c.isActive) return;
+
       const pc = pcRef.current;
       if (!pc) return;
+
       await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      socket.emit('webrtc:answer', { callId: data.callId, answer });
+
+      socket.emit('webrtc:answer', {
+        callId: data.callId,
+        targetUserId: data.userId,
+        answer,
+      });
+
+      await flushIceCandidates();
     };
 
-    const onAnswer = async (data: { answer: RTCSessionDescriptionInit }) => {
+    // CALLER: receives answer from callee
+    const onAnswer = async (data: { answer: RTCSessionDescriptionInit; callId: string }) => {
       const pc = pcRef.current;
       if (!pc) return;
       await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+      await flushIceCandidates();
     };
 
-    const onIceCandidate = async (data: { candidate: RTCIceCandidateInit }) => {
+    // BOTH: ICE candidates
+    const onIceCandidate = async (data: { candidate: RTCIceCandidateInit; callId: string }) => {
       const pc = pcRef.current;
-      if (!pc) return;
+      if (!pc || !pc.remoteDescription) {
+        iceCandidateQueue.current.push(data.candidate);
+        return;
+      }
       try {
         await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
       } catch (err) {
@@ -311,46 +351,72 @@ export default function CallModal() {
     };
 
     const onCallEnded = () => {
+      if (endedRef.current) return;
+      endedRef.current = true;
       cleanup();
-      setCall({
-        isActive: false, isIncoming: false, isConnected: false,
-        callId: null, type: 'AUDIO', remoteUser: null,
-      });
+      setCall(EMPTY_CALL);
     };
 
-    const onCallRejected = () => {
+    const onCallDeclined = () => {
+      if (endedRef.current) return;
+      endedRef.current = true;
       cleanup();
-      setCall({
-        isActive: false, isIncoming: false, isConnected: false,
-        callId: null, type: 'AUDIO', remoteUser: null,
-      });
+      setCall(EMPTY_CALL);
     };
 
+    socket.on('call:initiated', onCallInitiated);
     socket.on('call:incoming', onIncomingCall);
     socket.on('call:accepted', onCallAccepted);
     socket.on('webrtc:offer', onOffer);
     socket.on('webrtc:answer', onAnswer);
     socket.on('webrtc:ice-candidate', onIceCandidate);
     socket.on('call:ended', onCallEnded);
-    socket.on('call:rejected', onCallRejected);
-
-    // Expose startCall globally for ChatView to use
-    (window as any).__xaxamaxStartCall = (targetUserId: string, type: CallType, callId: string, remoteUser: any) => {
-      setCall({ isActive: true, isIncoming: false, isConnected: false, callId, type, remoteUser });
-      startCall(targetUserId, type);
-    };
+    socket.on('call:declined', onCallDeclined);
 
     return () => {
+      socket.off('call:initiated', onCallInitiated);
       socket.off('call:incoming', onIncomingCall);
       socket.off('call:accepted', onCallAccepted);
       socket.off('webrtc:offer', onOffer);
       socket.off('webrtc:answer', onAnswer);
       socket.off('webrtc:ice-candidate', onIceCandidate);
       socket.off('call:ended', onCallEnded);
-      socket.off('call:rejected', onCallRejected);
-      delete (window as any).__xaxamaxStartCall;
+      socket.off('call:declined', onCallDeclined);
     };
-  }, [startCall, cleanup]);
+  }, [cleanup, createPeerConnection, getLocalStream, flushIceCandidates]);
+
+  // CALLEE: when user clicks Accept → get media, create PC, notify server
+  const answerCall = useCallback(async () => {
+    endedRef.current = false;
+    const c = callRef.current;
+    if (!c.callId || !c.remoteUserId) return;
+
+    const stream = await getLocalStream(c.type);
+    if (!stream) return;
+
+    const pc = createPeerConnection(c.remoteUserId, c.callId);
+    stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+
+    setCall((prev) => ({ ...prev, isIncoming: false }));
+    const socket = getSocket();
+    socket?.emit('call:accept', { callId: c.callId });
+  }, [createPeerConnection, getLocalStream]);
+
+  // CALLER: ChatView triggers this via socket 'call:initiate'
+  // We listen for 'call:initiated' to get callId, then 'call:accepted' to start WebRTC
+  const handleInitiateCall = useCallback((targetUserId: string, type: CallType, remoteUser: { id: string; displayName: string; avatar: string | null }) => {
+    endedRef.current = false;
+    setCall({
+      isActive: true, isIncoming: false, isConnected: false,
+      callId: null, type, remoteUserId: targetUserId, remoteUser,
+    });
+  }, []);
+
+  // Expose for ChatView
+  useEffect(() => {
+    (window as any).__xaxamaxInitiateCall = handleInitiateCall;
+    return () => { delete (window as any).__xaxamaxInitiateCall; };
+  }, [handleInitiateCall]);
 
   const formatDuration = (s: number) => {
     const m = Math.floor(s / 60);
@@ -358,17 +424,18 @@ export default function CallModal() {
     return `${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
   };
 
-  const getInitials = (name: string) => name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase();
+  const getInitials = (name: string) =>
+    name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase();
 
   if (!call.isActive) return null;
 
-  const showVideo = call.type !== 'AUDIO' || !isVideoOff;
+  const showVideo = call.type !== 'AUDIO';
 
   return (
-    <div className={`fixed inset-0 z-50 bg-dark-950/95 flex flex-col items-center justify-center ${isFullscreen ? '' : 'p-4'}`}>
+    <div className={`fixed inset-0 z-50 bg-dark-950/95 backdrop-blur-sm flex flex-col items-center justify-center ${isFullscreen ? '' : 'p-4'}`}>
       {/* Remote video / Avatar */}
-      <div className="relative flex-1 w-full max-w-4xl flex items-center justify-center">
-        {showVideo ? (
+      <div className="relative flex-1 w-full max-w-4xl flex items-center justify-center overflow-hidden">
+        {showVideo && call.isConnected ? (
           <video
             ref={remoteVideoRef}
             autoPlay
@@ -377,21 +444,21 @@ export default function CallModal() {
           />
         ) : (
           <div className="flex flex-col items-center gap-4">
-            <div className="w-32 h-32 rounded-full bg-primary-600/30 flex items-center justify-center text-4xl font-bold text-primary-300">
+            <div className="w-32 h-32 rounded-full bg-primary-600/30 flex items-center justify-center text-4xl font-bold text-primary-300 overflow-hidden">
               {call.remoteUser?.avatar
                 ? <img src={call.remoteUser.avatar} className="w-full h-full rounded-full object-cover" alt="" />
                 : getInitials(call.remoteUser?.displayName || '?')}
             </div>
             <h3 className="text-xl font-semibold text-white">{call.remoteUser?.displayName}</h3>
-            <p className="text-dark-400 text-sm">
+            <p className="text-dark-400 text-sm animate-pulse">
               {call.isIncoming ? 'Входящий звонок...' : call.isConnected ? formatDuration(callDuration) : 'Соединение...'}
             </p>
           </div>
         )}
 
-        {/* Local video PiP */}
-        {showVideo && localStreamRef.current && (
-          <div className="absolute bottom-4 right-4 w-40 h-28 rounded-xl overflow-hidden border-2 border-dark-700 shadow-xl">
+        {/* Local video PiP — only when connected and video */}
+        {showVideo && hasLocalStream && call.isConnected && (
+          <div className="absolute bottom-4 right-4 w-36 h-24 rounded-xl overflow-hidden border-2 border-dark-600 shadow-2xl bg-dark-900 z-10">
             <video
               ref={localVideoRef}
               autoPlay
@@ -403,7 +470,12 @@ export default function CallModal() {
         )}
       </div>
 
-      {/* Call info */}
+      {/* Duration when connected + audio only */}
+      {call.isConnected && !showVideo && (
+        <p className="text-primary-400 text-lg font-mono">{formatDuration(callDuration)}</p>
+      )}
+
+      {/* Duration overlay for video */}
       {call.isConnected && showVideo && (
         <div className="text-center py-2">
           <p className="text-white font-medium">{call.remoteUser?.displayName}</p>
@@ -413,13 +485,19 @@ export default function CallModal() {
 
       {/* Incoming call buttons */}
       {call.isIncoming && (
-        <div className="flex items-center gap-6 py-8">
-          <button onClick={rejectCall} className="w-16 h-16 rounded-full bg-red-500 flex items-center justify-center hover:bg-red-600 transition-colors">
-            <PhoneOff className="w-7 h-7 text-white" />
-          </button>
-          <button onClick={answerCall} className="w-16 h-16 rounded-full bg-green-500 flex items-center justify-center hover:bg-green-600 transition-colors animate-pulse">
-            <Phone className="w-7 h-7 text-white" />
-          </button>
+        <div className="flex items-center gap-8 py-8">
+          <div className="flex flex-col items-center gap-2">
+            <button onClick={rejectCall} className="w-16 h-16 rounded-full bg-red-500 flex items-center justify-center hover:bg-red-600 transition-colors shadow-lg shadow-red-500/30">
+              <PhoneOff className="w-7 h-7 text-white" />
+            </button>
+            <span className="text-xs text-dark-400">Отклонить</span>
+          </div>
+          <div className="flex flex-col items-center gap-2">
+            <button onClick={answerCall} className="w-16 h-16 rounded-full bg-green-500 flex items-center justify-center hover:bg-green-600 transition-colors animate-pulse shadow-lg shadow-green-500/30">
+              <Phone className="w-7 h-7 text-white" />
+            </button>
+            <span className="text-xs text-dark-400">Принять</span>
+          </div>
         </div>
       )}
 
@@ -432,12 +510,14 @@ export default function CallModal() {
           >
             {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
           </button>
-          <button
-            onClick={toggleVideo}
-            className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors ${isVideoOff ? 'bg-red-500/20 text-red-400' : 'bg-dark-800 text-white hover:bg-dark-700'}`}
-          >
-            {isVideoOff ? <VideoOff className="w-5 h-5" /> : <Video className="w-5 h-5" />}
-          </button>
+          {showVideo && (
+            <button
+              onClick={toggleVideo}
+              className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors ${isVideoOff ? 'bg-red-500/20 text-red-400' : 'bg-dark-800 text-white hover:bg-dark-700'}`}
+            >
+              {isVideoOff ? <VideoOff className="w-5 h-5" /> : <Video className="w-5 h-5" />}
+            </button>
+          )}
           <button
             onClick={toggleScreenShare}
             className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors ${isScreenSharing ? 'bg-primary-500/20 text-primary-400' : 'bg-dark-800 text-white hover:bg-dark-700'}`}
@@ -452,7 +532,7 @@ export default function CallModal() {
           </button>
           <button
             onClick={hangUp}
-            className="w-14 h-14 rounded-full bg-red-500 flex items-center justify-center hover:bg-red-600 transition-colors"
+            className="w-14 h-14 rounded-full bg-red-500 flex items-center justify-center hover:bg-red-600 transition-colors shadow-lg shadow-red-500/30"
           >
             <PhoneOff className="w-6 h-6 text-white" />
           </button>
