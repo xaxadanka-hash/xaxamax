@@ -18,22 +18,35 @@ interface CallState {
   remoteUser: { id: string; displayName: string; avatar: string | null } | null;
 }
 
-const ICE_SERVERS: RTCConfiguration = {
+// Production ICE config: STUN + TURN (like mirotalk)
+const RTC_CONFIG: RTCConfiguration = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun.relay.metered.ca:80' },
-    { urls: 'turn:global.relay.metered.ca:80', username: 'open', credential: 'open' },
-    { urls: 'turn:global.relay.metered.ca:443', username: 'open', credential: 'open' },
-    { urls: 'turn:global.relay.metered.ca:443?transport=tcp', username: 'open', credential: 'open' },
+    {
+      urls: [
+        'turn:global.relay.metered.ca:80',
+        'turn:global.relay.metered.ca:443',
+        'turn:global.relay.metered.ca:443?transport=tcp',
+      ],
+      username: 'open',
+      credential: 'open',
+    },
   ],
   iceCandidatePoolSize: 10,
+  iceTransportPolicy: 'all',
+  bundlePolicy: 'max-bundle',
+  rtcpMuxPolicy: 'require',
 };
 
 const EMPTY_CALL: CallState = {
   isActive: false, isIncoming: false, isConnected: false,
   callId: null, type: 'AUDIO', remoteUserId: null, remoteUser: null,
 };
+
+const log = (msg: string, ...args: any[]) => console.log(`[xaxamax:call] ${msg}`, ...args);
+const logErr = (msg: string, ...args: any[]) => console.error(`[xaxamax:call] ${msg}`, ...args);
 
 export default function CallModal() {
   const { user } = useAuthStore();
@@ -44,6 +57,7 @@ export default function CallModal() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
   const [hasLocalStream, setHasLocalStream] = useState(false);
+  const [hasRemoteScreen, setHasRemoteScreen] = useState(false);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -51,45 +65,42 @@ export default function CallModal() {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const remoteScreenRef = useRef<HTMLVideoElement>(null);
-  const [hasRemoteScreen, setHasRemoteScreen] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const iceCandidateQueue = useRef<RTCIceCandidateInit[]>([]);
   const callRef = useRef<CallState>(EMPTY_CALL);
   const endedRef = useRef(false);
-  const disconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const makingOfferRef = useRef(false);
+  const iceRestartCountRef = useRef(0);
+  const isCallerRef = useRef(false);
 
-  // Keep ref in sync with state
   useEffect(() => { callRef.current = call; }, [call]);
 
+  // ─── CLEANUP ──────────────────────────────────────────────
   const cleanup = useCallback(() => {
     endedRef.current = true;
+    makingOfferRef.current = false;
+    iceRestartCountRef.current = 0;
     if (pcRef.current) {
       pcRef.current.onicecandidate = null;
       pcRef.current.ontrack = null;
       pcRef.current.onconnectionstatechange = null;
-      pcRef.current.close();
+      pcRef.current.oniceconnectionstatechange = null;
+      pcRef.current.onicecandidateerror = null;
+      pcRef.current.onnegotiationneeded = null;
+      pcRef.current.onsignalingstatechange = null;
+      try { pcRef.current.close(); } catch (_) {}
       pcRef.current = null;
     }
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((t) => t.stop());
-      localStreamRef.current = null;
-    }
-    if (screenStreamRef.current) {
-      screenStreamRef.current.getTracks().forEach((t) => t.stop());
-      screenStreamRef.current = null;
-    }
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-    if (localVideoRef.current) localVideoRef.current.srcObject = null;
-    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
-    if (remoteScreenRef.current) remoteScreenRef.current.srcObject = null;
-    setHasRemoteScreen(false);
-    if (disconnectTimerRef.current) {
-      clearTimeout(disconnectTimerRef.current);
-      disconnectTimerRef.current = null;
-    }
+    [localStreamRef, screenStreamRef].forEach((ref) => {
+      if (ref.current) {
+        ref.current.getTracks().forEach((t) => t.stop());
+        ref.current = null;
+      }
+    });
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    [localVideoRef, remoteVideoRef, remoteScreenRef].forEach((ref) => {
+      if (ref.current) ref.current.srcObject = null;
+    });
     iceCandidateQueue.current = [];
     setCallDuration(0);
     setIsMuted(false);
@@ -97,106 +108,172 @@ export default function CallModal() {
     setIsScreenSharing(false);
     setIsFullscreen(false);
     setHasLocalStream(false);
+    setHasRemoteScreen(false);
   }, []);
 
-  const createPeerConnection = useCallback((remoteUserId: string, callId: string) => {
-    if (pcRef.current) {
-      pcRef.current.close();
-    }
-    const pc = new RTCPeerConnection(ICE_SERVERS);
+  const endCall = useCallback((emitEvent: 'call:end' | 'call:decline' = 'call:end') => {
+    if (endedRef.current) return;
+    endedRef.current = true;
+    const socket = getSocket();
+    const cid = callRef.current.callId;
+    if (cid) socket?.emit(emitEvent, { callId: cid });
+    cleanup();
+    setCall(EMPTY_CALL);
+  }, [cleanup]);
+
+  // ─── PEER CONNECTION (mirotalk-inspired) ──────────────────
+  const createPeerConnection = useCallback((remoteUserId: string, callId: string, isCaller: boolean) => {
+    if (pcRef.current) { try { pcRef.current.close(); } catch (_) {} }
+    isCallerRef.current = isCaller;
+
+    const pc = new RTCPeerConnection(RTC_CONFIG);
     const socket = getSocket();
 
+    // ICE candidate → relay to remote (filter empty like mirotalk)
     pc.onicecandidate = (e) => {
-      if (e.candidate) {
-        socket?.emit('webrtc:ice-candidate', {
-          callId,
-          targetUserId: remoteUserId,
-          candidate: e.candidate,
-        });
-      }
+      if (!e.candidate || !e.candidate.candidate) return;
+      socket?.emit('webrtc:ice-candidate', {
+        callId,
+        targetUserId: remoteUserId,
+        candidate: e.candidate.toJSON(),
+      });
     };
 
-    let remoteTrackCount = 0;
+    // ICE candidate errors (mirotalk: onicecandidateerror)
+    (pc as any).onicecandidateerror = (e: any) => {
+      log('ICE candidate error:', e?.url, e?.errorText);
+    };
+
+    // Track handler — detect camera vs screen share
+    const remoteStreams = new Map<string, 'camera' | 'screen'>();
     pc.ontrack = (e) => {
-      if (!e.streams[0]) return;
-      remoteTrackCount++;
-      // First video stream → main remote video (camera)
-      // Second video stream → screen share
-      if (e.track.kind === 'video' && remoteTrackCount > 2) {
-        // This is likely a screen share track (3rd+ track after audio+video)
+      if (!e.streams?.[0]) return;
+      const stream = e.streams[0];
+      const track = e.track;
+      const streamId = stream.id;
+
+      // Detect screen share track (mirotalk pattern)
+      const settings = track.getSettings?.() || {};
+      const isScreen =
+        (settings as any).displaySurface != null ||
+        (settings as any).mediaSource === 'screen' ||
+        /screen|window|monitor|display/i.test(track.label || '');
+
+      if (track.kind === 'video' && isScreen) {
+        remoteStreams.set(streamId, 'screen');
         if (remoteScreenRef.current) {
-          remoteScreenRef.current.srcObject = e.streams[0];
+          remoteScreenRef.current.srcObject = stream;
           setHasRemoteScreen(true);
         }
       } else {
+        if (!remoteStreams.has(streamId)) remoteStreams.set(streamId, 'camera');
         if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = e.streams[0];
+          remoteVideoRef.current.srcObject = stream;
+        }
+      }
+
+      // When remote screen share track ends → clear
+      track.onended = () => {
+        if (remoteStreams.get(streamId) === 'screen') {
+          remoteStreams.delete(streamId);
+          setHasRemoteScreen(false);
+          if (remoteScreenRef.current) remoteScreenRef.current.srcObject = null;
+        }
+      };
+    };
+
+    // onnegotiationneeded — auto-renegotiation (mirotalk key pattern)
+    // Fires when addTrack/removeTrack is called (e.g., screen share toggle)
+    pc.onnegotiationneeded = async () => {
+      if (!isCallerRef.current) return; // Only offerer renegotiates
+      try {
+        makingOfferRef.current = true;
+        const offer = await pc.createOffer();
+        if (pc.signalingState !== 'stable') return; // Abort if state changed
+        await pc.setLocalDescription(offer);
+        log('onnegotiationneeded → sending offer');
+        socket?.emit('webrtc:offer', {
+          callId: callRef.current.callId || callId,
+          targetUserId: remoteUserId,
+          offer: pc.localDescription,
+        });
+      } catch (err) {
+        logErr('onnegotiationneeded error:', err);
+      } finally {
+        makingOfferRef.current = false;
+      }
+    };
+
+    // Connection state (mirotalk: only log, never auto-disconnect on 'disconnected')
+    pc.onconnectionstatechange = () => {
+      log('connectionState:', pc.connectionState);
+      if (pc.connectionState === 'connected') {
+        iceRestartCountRef.current = 0;
+        setCall((prev) => ({ ...prev, isConnected: true }));
+        if (!timerRef.current) {
+          timerRef.current = setInterval(() => setCallDuration((d) => d + 1), 1000);
         }
       }
     };
 
-    pc.onconnectionstatechange = () => {
-      console.log('[WebRTC] connectionState:', pc.connectionState);
-      if (pc.connectionState === 'connected') {
+    // ICE connection state — more reliable for detecting actual connectivity
+    pc.oniceconnectionstatechange = () => {
+      log('iceConnectionState:', pc.iceConnectionState);
+
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        iceRestartCountRef.current = 0;
         setCall((prev) => ({ ...prev, isConnected: true }));
-        if (disconnectTimerRef.current) {
-          clearTimeout(disconnectTimerRef.current);
-          disconnectTimerRef.current = null;
-        }
         if (!timerRef.current) {
-          timerRef.current = setInterval(() => {
-            setCallDuration((d) => d + 1);
-          }, 1000);
+          timerRef.current = setInterval(() => setCallDuration((d) => d + 1), 1000);
         }
       }
-      // 'disconnected' is often transient — wait 10s before ending
-      if (pc.connectionState === 'disconnected') {
-        if (!disconnectTimerRef.current) {
-          disconnectTimerRef.current = setTimeout(() => {
-            if (pcRef.current?.connectionState === 'disconnected' && !endedRef.current) {
-              endedRef.current = true;
-              const cid = callRef.current.callId;
-              if (cid) socket?.emit('call:end', { callId: cid });
-              cleanup();
-              setCall(EMPTY_CALL);
-            }
-          }, 10000);
+
+      // ICE restart on disconnected (mirotalk pattern: don't kill, try restart)
+      if (pc.iceConnectionState === 'disconnected') {
+        log('ICE disconnected — waiting for recovery...');
+        // Browser will attempt recovery automatically; we just log
+      }
+
+      // ICE failed → attempt ICE restart up to 3 times (like production calling apps)
+      if (pc.iceConnectionState === 'failed') {
+        if (iceRestartCountRef.current < 3 && isCallerRef.current) {
+          iceRestartCountRef.current++;
+          log(`ICE failed → restart attempt ${iceRestartCountRef.current}/3`);
+          pc.restartIce();
+          // restartIce() will trigger onnegotiationneeded → new offer
+        } else {
+          log('ICE failed permanently → ending call');
+          endCall();
         }
       }
-      // 'failed' is terminal — end immediately
-      if (pc.connectionState === 'failed') {
-        if (!endedRef.current) {
-          endedRef.current = true;
-          const cid = callRef.current.callId;
-          if (cid) socket?.emit('call:end', { callId: cid });
-          cleanup();
-          setCall(EMPTY_CALL);
-        }
-      }
+    };
+
+    pc.onsignalingstatechange = () => {
+      log('signalingState:', pc.signalingState);
     };
 
     pcRef.current = pc;
     return pc;
-  }, [cleanup]);
+  }, [cleanup, endCall]);
 
+  // ─── LOCAL MEDIA ──────────────────────────────────────────
   const getLocalStream = useCallback(async (type: CallType) => {
     try {
       if (type === 'SCREEN_SHARE') {
         const screen = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
         screenStreamRef.current = screen;
         const audio = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const combined = new MediaStream([
-          ...screen.getVideoTracks(),
-          ...audio.getAudioTracks(),
-        ]);
+        const combined = new MediaStream([...screen.getVideoTracks(), ...audio.getAudioTracks()]);
         localStreamRef.current = combined;
         screen.getVideoTracks()[0].onended = () => stopScreenShare();
       } else {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: type === 'VIDEO' ? { width: 1280, height: 720, facingMode: 'user' } : false,
-        });
-        localStreamRef.current = stream;
+        const constraints: MediaStreamConstraints = {
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          video: type === 'VIDEO'
+            ? { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: 'user' }
+            : false,
+        };
+        localStreamRef.current = await navigator.mediaDevices.getUserMedia(constraints);
       }
       if (localVideoRef.current && localStreamRef.current) {
         localVideoRef.current.srcObject = localStreamRef.current;
@@ -204,48 +281,35 @@ export default function CallModal() {
       setHasLocalStream(true);
       return localStreamRef.current;
     } catch (err) {
-      console.error('Get media error:', err);
+      logErr('getUserMedia error:', err);
       return null;
     }
   }, []);
 
+  // ─── ICE CANDIDATE QUEUE ─────────────────────────────────
   const flushIceCandidates = useCallback(async () => {
     const pc = pcRef.current;
     if (!pc || !pc.remoteDescription) return;
-    while (iceCandidateQueue.current.length > 0) {
-      const candidate = iceCandidateQueue.current.shift()!;
+    const queued = [...iceCandidateQueue.current];
+    iceCandidateQueue.current = [];
+    for (const c of queued) {
       try {
-        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        await pc.addIceCandidate(new RTCIceCandidate(c));
       } catch (err) {
-        console.error('ICE candidate error:', err);
+        logErr('flush ICE error:', err);
       }
     }
   }, []);
 
-  const hangUp = useCallback(() => {
-    if (endedRef.current) return;
-    endedRef.current = true;
-    const socket = getSocket();
-    const cid = callRef.current.callId;
-    if (cid) socket?.emit('call:end', { callId: cid });
-    cleanup();
-    setCall(EMPTY_CALL);
-  }, [cleanup]);
-
-  const rejectCall = useCallback(() => {
-    if (endedRef.current) return;
-    endedRef.current = true;
-    const socket = getSocket();
-    const cid = callRef.current.callId;
-    if (cid) socket?.emit('call:decline', { callId: cid });
-    cleanup();
-    setCall(EMPTY_CALL);
-  }, [cleanup]);
+  // ─── UI ACTIONS ───────────────────────────────────────────
+  const hangUp = useCallback(() => endCall('call:end'), [endCall]);
+  const rejectCall = useCallback(() => endCall('call:decline'), [endCall]);
 
   const toggleMute = () => {
     if (localStreamRef.current) {
-      localStreamRef.current.getAudioTracks().forEach((t) => { t.enabled = !t.enabled; });
-      setIsMuted(!isMuted);
+      const enabled = !isMuted;
+      localStreamRef.current.getAudioTracks().forEach((t) => { t.enabled = !enabled; });
+      setIsMuted(enabled);
     }
   };
 
@@ -257,18 +321,21 @@ export default function CallModal() {
       setIsVideoOff((v) => !v);
     } else {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+        });
         const track = stream.getVideoTracks()[0];
         localStreamRef.current.addTrack(track);
         pcRef.current?.addTrack(track, localStreamRef.current);
         if (localVideoRef.current) localVideoRef.current.srcObject = localStreamRef.current;
         setIsVideoOff(false);
       } catch (err) {
-        console.error('Toggle video error:', err);
+        logErr('toggleVideo error:', err);
       }
     }
   };
 
+  // Screen share: adds as separate stream (mirotalk: separate localScreenMediaStream)
   const toggleScreenShare = async () => {
     if (isScreenSharing) {
       stopScreenShare();
@@ -276,22 +343,22 @@ export default function CallModal() {
       try {
         const screen = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
         screenStreamRef.current = screen;
-        const screenVideoTrack = screen.getVideoTracks()[0];
+        const screenTrack = screen.getVideoTracks()[0];
 
-        // Add screen track as additional sender (keeps camera track too)
-        if (pcRef.current && screenVideoTrack) {
-          pcRef.current.addTrack(screenVideoTrack, screen);
+        // Add as separate track/stream — keeps camera track, triggers onnegotiationneeded
+        if (pcRef.current && screenTrack) {
+          pcRef.current.addTrack(screenTrack, screen);
         }
+        // Also add screen audio if available
+        screen.getAudioTracks().forEach((t) => {
+          pcRef.current?.addTrack(t, screen);
+        });
 
-        screenVideoTrack.onended = () => stopScreenShare();
+        screenTrack.onended = () => stopScreenShare();
         setIsScreenSharing(true);
-
-        // Show screen in local preview
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = screen;
-        }
+        if (localVideoRef.current) localVideoRef.current.srcObject = screen;
       } catch (err) {
-        console.error('Screen share error:', err);
+        logErr('toggleScreenShare error:', err);
       }
     }
   };
@@ -299,38 +366,39 @@ export default function CallModal() {
   const stopScreenShare = () => {
     if (screenStreamRef.current && pcRef.current) {
       const screenTracks = screenStreamRef.current.getTracks();
-      // Remove screen track senders from peer connection
+      // Remove from PC senders (triggers onnegotiationneeded → renegotiation)
       pcRef.current.getSenders().forEach((sender) => {
         if (sender.track && screenTracks.includes(sender.track)) {
-          pcRef.current?.removeTrack(sender);
+          try { pcRef.current?.removeTrack(sender); } catch (_) {}
         }
       });
       screenTracks.forEach((t) => t.stop());
       screenStreamRef.current = null;
     }
-    // Restore camera preview
     if (localVideoRef.current && localStreamRef.current) {
       localVideoRef.current.srcObject = localStreamRef.current;
     }
     setIsScreenSharing(false);
   };
 
-  // === SOCKET EVENT LISTENERS ===
+  // ─── SOCKET EVENTS ────────────────────────────────────────
   useEffect(() => {
     const socket = getSocket();
     if (!socket) return;
 
-    // CALLER: receives callId after initiating
+    // CALLER: server created call → receive callId
     const onCallInitiated = (data: { callId: string }) => {
+      log('call:initiated, callId=', data.callId);
       setCall((prev) => ({ ...prev, callId: data.callId }));
     };
 
-    // CALLEE: receives incoming call
+    // CALLEE: incoming call notification
     const onIncomingCall = (data: {
       callId: string; type: CallType;
       caller: { id: string; displayName: string; avatar: string | null };
     }) => {
-      if (callRef.current.isActive) return; // already in a call
+      if (callRef.current.isActive) return;
+      log('call:incoming from', data.caller.displayName);
       endedRef.current = false;
       setCall({
         isActive: true, isIncoming: true, isConnected: false,
@@ -339,78 +407,110 @@ export default function CallModal() {
       });
     };
 
-    // CALLER: callee accepted → get media and send offer
+    // CALLER: callee accepted → get local media → create PC → send offer
     const onCallAccepted = async (data: { callId: string; userId: string }) => {
       try {
         const c = callRef.current;
         if (!c.isActive || c.callId !== data.callId) return;
+        log('call:accepted by', data.userId);
 
         const remoteUid = data.userId;
         setCall((prev) => ({ ...prev, isIncoming: false, remoteUserId: remoteUid }));
 
         const stream = await getLocalStream(c.type);
-        if (!stream) { console.error('[Call] Failed to get local stream'); return; }
+        if (!stream) { logErr('Failed to get local stream'); return; }
 
-        const pc = createPeerConnection(remoteUid, data.callId);
+        // isCaller=true → this side creates offers and handles renegotiation
+        const pc = createPeerConnection(remoteUid, data.callId, true);
+
+        // Add tracks — this fires onnegotiationneeded which auto-creates offer
         stream.getTracks().forEach((t) => pc.addTrack(t, stream));
 
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-
-        console.log('[Call] Sending offer to', remoteUid);
-        socket.emit('webrtc:offer', {
-          callId: data.callId,
-          targetUserId: remoteUid,
-          offer,
-        });
+        // Fallback: if onnegotiationneeded didn't fire (some browsers), create offer manually
+        setTimeout(async () => {
+          if (pc.signalingState === 'stable' && !pc.localDescription) {
+            log('Fallback: manually creating offer');
+            try {
+              const offer = await pc.createOffer();
+              await pc.setLocalDescription(offer);
+              socket.emit('webrtc:offer', {
+                callId: data.callId,
+                targetUserId: remoteUid,
+                offer: pc.localDescription,
+              });
+            } catch (err) {
+              logErr('Fallback offer error:', err);
+            }
+          }
+        }, 500);
       } catch (err) {
-        console.error('[Call] onCallAccepted error:', err);
+        logErr('onCallAccepted error:', err);
       }
     };
 
-    // CALLEE: receives offer from caller → create answer
+    // CALLEE: receives offer → set remote desc → create answer
     const onOffer = async (data: {
       callId: string; offer: RTCSessionDescriptionInit; userId: string;
     }) => {
       try {
         const c = callRef.current;
         if (!c.isActive) return;
-
         const pc = pcRef.current;
-        if (!pc) { console.error('[Call] No peer connection for offer'); return; }
+        if (!pc) { logErr('No PC for offer'); return; }
+
+        log('webrtc:offer received from', data.userId);
+
+        // Perfect negotiation: handle offer collision (glare)
+        const offerCollision = makingOfferRef.current || pc.signalingState !== 'stable';
+        const isPolite = !isCallerRef.current; // callee is always the polite peer
+
+        if (offerCollision && !isPolite) {
+          log('Ignoring offer — collision and we are impolite');
+          return;
+        }
+
+        if (offerCollision && isPolite) {
+          // Rollback current local description
+          await pc.setLocalDescription({ type: 'rollback' } as any);
+        }
 
         await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
 
-        console.log('[Call] Sending answer to', data.userId);
+        log('Sending answer to', data.userId);
         socket.emit('webrtc:answer', {
           callId: data.callId,
           targetUserId: data.userId,
-          answer,
+          answer: pc.localDescription,
         });
 
         await flushIceCandidates();
       } catch (err) {
-        console.error('[Call] onOffer error:', err);
+        logErr('onOffer error:', err);
       }
     };
 
-    // CALLER: receives answer from callee
+    // CALLER: receives answer
     const onAnswer = async (data: { answer: RTCSessionDescriptionInit; callId: string }) => {
       try {
         const pc = pcRef.current;
         if (!pc) return;
+        if (pc.signalingState !== 'have-local-offer') {
+          log('Ignoring answer — signalingState is', pc.signalingState);
+          return;
+        }
+        log('webrtc:answer received');
         await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
         await flushIceCandidates();
-        console.log('[Call] Answer set, ICE flushed');
       } catch (err) {
-        console.error('[Call] onAnswer error:', err);
+        logErr('onAnswer error:', err);
       }
     };
 
-    // BOTH: ICE candidates
+    // BOTH: ICE candidates (filter empty like mirotalk)
     const onIceCandidate = async (data: { candidate: RTCIceCandidateInit; callId: string }) => {
+      if (!data.candidate || !data.candidate.candidate) return;
       const pc = pcRef.current;
       if (!pc || !pc.remoteDescription) {
         iceCandidateQueue.current.push(data.candidate);
@@ -419,12 +519,13 @@ export default function CallModal() {
       try {
         await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
       } catch (err) {
-        console.error('ICE candidate error:', err);
+        logErr('addIceCandidate error:', err);
       }
     };
 
     const onCallEnded = () => {
       if (endedRef.current) return;
+      log('call:ended received');
       endedRef.current = true;
       cleanup();
       setCall(EMPTY_CALL);
@@ -432,6 +533,7 @@ export default function CallModal() {
 
     const onCallDeclined = () => {
       if (endedRef.current) return;
+      log('call:declined received');
       endedRef.current = true;
       cleanup();
       setCall(EMPTY_CALL);
@@ -456,9 +558,9 @@ export default function CallModal() {
       socket.off('call:ended', onCallEnded);
       socket.off('call:declined', onCallDeclined);
     };
-  }, [cleanup, createPeerConnection, getLocalStream, flushIceCandidates]);
+  }, [cleanup, createPeerConnection, getLocalStream, flushIceCandidates, endCall]);
 
-  // CALLEE: when user clicks Accept → get media, create PC, notify server
+  // CALLEE: click Accept → get media → create PC → tell server
   const answerCall = useCallback(async () => {
     endedRef.current = false;
     const c = callRef.current;
@@ -467,7 +569,8 @@ export default function CallModal() {
     const stream = await getLocalStream(c.type);
     if (!stream) return;
 
-    const pc = createPeerConnection(c.remoteUserId, c.callId);
+    // isCaller=false → callee is the polite peer in perfect negotiation
+    const pc = createPeerConnection(c.remoteUserId, c.callId, false);
     stream.getTracks().forEach((t) => pc.addTrack(t, stream));
 
     setCall((prev) => ({ ...prev, isIncoming: false }));
@@ -475,9 +578,12 @@ export default function CallModal() {
     socket?.emit('call:accept', { callId: c.callId });
   }, [createPeerConnection, getLocalStream]);
 
-  // CALLER: ChatView triggers this via socket 'call:initiate'
-  // We listen for 'call:initiated' to get callId, then 'call:accepted' to start WebRTC
-  const handleInitiateCall = useCallback((targetUserId: string, type: CallType, remoteUser: { id: string; displayName: string; avatar: string | null }) => {
+  // CALLER: ChatView triggers this
+  const handleInitiateCall = useCallback((
+    targetUserId: string,
+    type: CallType,
+    remoteUser: { id: string; displayName: string; avatar: string | null },
+  ) => {
     endedRef.current = false;
     setCall({
       isActive: true, isIncoming: false, isConnected: false,
@@ -485,12 +591,12 @@ export default function CallModal() {
     });
   }, []);
 
-  // Expose for ChatView
   useEffect(() => {
     (window as any).__xaxamaxInitiateCall = handleInitiateCall;
     return () => { delete (window as any).__xaxamaxInitiateCall; };
   }, [handleInitiateCall]);
 
+  // ─── HELPERS ──────────────────────────────────────────────
   const formatDuration = (s: number) => {
     const m = Math.floor(s / 60);
     const sec = s % 60;
@@ -500,6 +606,7 @@ export default function CallModal() {
   const getInitials = (name: string) =>
     name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase();
 
+  // ─── RENDER ───────────────────────────────────────────────
   if (!call.isActive) return null;
 
   const showVideo = call.type !== 'AUDIO';
@@ -510,16 +617,16 @@ export default function CallModal() {
       <div className="relative flex-1 w-full max-w-4xl flex items-center justify-center overflow-hidden">
         {showVideo && call.isConnected ? (
           <div className="relative w-full h-full flex items-center justify-center">
-            {/* Main remote video (camera or screen share if active) */}
+            {/* Main video — screen share if available, otherwise camera */}
             <video
               ref={hasRemoteScreen ? remoteScreenRef : remoteVideoRef}
               autoPlay
               playsInline
               className="w-full h-full max-h-[70vh] object-contain rounded-2xl bg-dark-900"
             />
-            {/* Remote camera PiP when screen share is active */}
+            {/* Remote camera PiP when screen share active */}
             {hasRemoteScreen && (
-              <div className="absolute top-4 right-4 w-36 h-24 rounded-xl overflow-hidden border-2 border-dark-600 shadow-2xl bg-dark-900 z-10">
+              <div className="absolute top-4 right-4 w-40 h-28 rounded-xl overflow-hidden border-2 border-dark-600 shadow-2xl bg-dark-900 z-10">
                 <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
               </div>
             )}
@@ -538,26 +645,20 @@ export default function CallModal() {
           </div>
         )}
 
-        {/* Local video PiP — only when connected and video */}
+        {/* Local PiP */}
         {showVideo && hasLocalStream && call.isConnected && (
           <div className="absolute bottom-4 right-4 w-36 h-24 rounded-xl overflow-hidden border-2 border-dark-600 shadow-2xl bg-dark-900 z-10">
-            <video
-              ref={localVideoRef}
-              autoPlay
-              playsInline
-              muted
-              className="w-full h-full object-cover"
-            />
+            <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
           </div>
         )}
       </div>
 
-      {/* Duration when connected + audio only */}
+      {/* Duration — audio only */}
       {call.isConnected && !showVideo && (
         <p className="text-primary-400 text-lg font-mono">{formatDuration(callDuration)}</p>
       )}
 
-      {/* Duration overlay for video */}
+      {/* Duration — video */}
       {call.isConnected && showVideo && (
         <div className="text-center py-2">
           <p className="text-white font-medium">{call.remoteUser?.displayName}</p>
@@ -586,36 +687,26 @@ export default function CallModal() {
       {/* Active call controls */}
       {!call.isIncoming && (
         <div className="flex items-center gap-3 py-6">
-          <button
-            onClick={toggleMute}
-            className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors ${isMuted ? 'bg-red-500/20 text-red-400' : 'bg-dark-800 text-white hover:bg-dark-700'}`}
-          >
+          <button onClick={toggleMute}
+            className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors ${isMuted ? 'bg-red-500/20 text-red-400' : 'bg-dark-800 text-white hover:bg-dark-700'}`}>
             {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
           </button>
           {showVideo && (
-            <button
-              onClick={toggleVideo}
-              className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors ${isVideoOff ? 'bg-red-500/20 text-red-400' : 'bg-dark-800 text-white hover:bg-dark-700'}`}
-            >
+            <button onClick={toggleVideo}
+              className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors ${isVideoOff ? 'bg-red-500/20 text-red-400' : 'bg-dark-800 text-white hover:bg-dark-700'}`}>
               {isVideoOff ? <VideoOff className="w-5 h-5" /> : <Video className="w-5 h-5" />}
             </button>
           )}
-          <button
-            onClick={toggleScreenShare}
-            className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors ${isScreenSharing ? 'bg-primary-500/20 text-primary-400' : 'bg-dark-800 text-white hover:bg-dark-700'}`}
-          >
+          <button onClick={toggleScreenShare}
+            className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors ${isScreenSharing ? 'bg-primary-500/20 text-primary-400' : 'bg-dark-800 text-white hover:bg-dark-700'}`}>
             {isScreenSharing ? <MonitorOff className="w-5 h-5" /> : <Monitor className="w-5 h-5" />}
           </button>
-          <button
-            onClick={() => setIsFullscreen(!isFullscreen)}
-            className="w-12 h-12 rounded-full bg-dark-800 text-white hover:bg-dark-700 flex items-center justify-center transition-colors"
-          >
+          <button onClick={() => setIsFullscreen(!isFullscreen)}
+            className="w-12 h-12 rounded-full bg-dark-800 text-white hover:bg-dark-700 flex items-center justify-center transition-colors">
             {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
           </button>
-          <button
-            onClick={hangUp}
-            className="w-14 h-14 rounded-full bg-red-500 flex items-center justify-center hover:bg-red-600 transition-colors shadow-lg shadow-red-500/30"
-          >
+          <button onClick={hangUp}
+            className="w-14 h-14 rounded-full bg-red-500 flex items-center justify-center hover:bg-red-600 transition-colors shadow-lg shadow-red-500/30">
             <PhoneOff className="w-6 h-6 text-white" />
           </button>
         </div>

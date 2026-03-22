@@ -217,26 +217,40 @@ export function setupSocketHandlers(io: Server) {
       }
     });
 
-    // WebRTC signaling
+    // WebRTC signaling — stateless relays (supports renegotiation for screen share)
     socket.on('webrtc:offer', (data: { targetUserId: string; offer: any; callId: string }) => {
-      const targetSockets = getUserSockets(data.targetUserId);
-      targetSockets.forEach((socketId) => {
-        io.to(socketId).emit('webrtc:offer', { offer: data.offer, callId: data.callId, userId });
-      });
+      try {
+        const targetSockets = getUserSockets(data.targetUserId);
+        console.log(`📡 webrtc:offer ${userId} → ${data.targetUserId} (${targetSockets.size} sockets)`);
+        targetSockets.forEach((socketId) => {
+          io.to(socketId).emit('webrtc:offer', { offer: data.offer, callId: data.callId, userId });
+        });
+      } catch (err) {
+        console.error('webrtc:offer relay error:', err);
+      }
     });
 
     socket.on('webrtc:answer', (data: { targetUserId: string; answer: any; callId: string }) => {
-      const targetSockets = getUserSockets(data.targetUserId);
-      targetSockets.forEach((socketId) => {
-        io.to(socketId).emit('webrtc:answer', { answer: data.answer, callId: data.callId, userId });
-      });
+      try {
+        const targetSockets = getUserSockets(data.targetUserId);
+        console.log(`📡 webrtc:answer ${userId} → ${data.targetUserId} (${targetSockets.size} sockets)`);
+        targetSockets.forEach((socketId) => {
+          io.to(socketId).emit('webrtc:answer', { answer: data.answer, callId: data.callId, userId });
+        });
+      } catch (err) {
+        console.error('webrtc:answer relay error:', err);
+      }
     });
 
     socket.on('webrtc:ice-candidate', (data: { targetUserId: string; candidate: any; callId: string }) => {
-      const targetSockets = getUserSockets(data.targetUserId);
-      targetSockets.forEach((socketId) => {
-        io.to(socketId).emit('webrtc:ice-candidate', { candidate: data.candidate, callId: data.callId, userId });
-      });
+      try {
+        const targetSockets = getUserSockets(data.targetUserId);
+        targetSockets.forEach((socketId) => {
+          io.to(socketId).emit('webrtc:ice-candidate', { candidate: data.candidate, callId: data.callId, userId });
+        });
+      } catch (err) {
+        console.error('webrtc:ice-candidate relay error:', err);
+      }
     });
 
     // === JOIN CHAT ===
