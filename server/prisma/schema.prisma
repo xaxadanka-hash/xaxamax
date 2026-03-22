@@ -1,0 +1,270 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String   @id @default(uuid())
+  phone       String   @unique
+  password    String
+  displayName String
+  avatar      String?
+  bio         String?
+  lastSeen    DateTime @default(now())
+  isOnline    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  messages       Message[]
+  chatMembers    ChatMember[]
+  contacts       Contact[]       @relation("userContacts")
+  contactOf      Contact[]       @relation("contactUser")
+  posts          Post[]
+  postLikes      PostLike[]
+  comments       Comment[]
+  commentLikes   CommentLike[]
+  callsInitiated Call[]          @relation("callInitiator")
+  callsReceived  CallParticipant[]
+  notifications  Notification[]
+  mediaFiles     Media[]
+}
+
+model Contact {
+  id        String   @id @default(uuid())
+  userId    String
+  contactId String
+  nickname  String?
+  createdAt DateTime @default(now())
+
+  user    User @relation("userContacts", fields: [userId], references: [id], onDelete: Cascade)
+  contact User @relation("contactUser", fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, contactId])
+}
+
+model Chat {
+  id        String   @id @default(uuid())
+  type      ChatType @default(PRIVATE)
+  name      String?
+  avatar    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members  ChatMember[]
+  messages Message[]
+}
+
+enum ChatType {
+  PRIVATE
+  GROUP
+}
+
+model ChatMember {
+  id       String         @id @default(uuid())
+  chatId   String
+  userId   String
+  role     ChatMemberRole @default(MEMBER)
+  joinedAt DateTime       @default(now())
+  mutedAt  DateTime?
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, userId])
+}
+
+enum ChatMemberRole {
+  ADMIN
+  MEMBER
+}
+
+model Message {
+  id        String        @id @default(uuid())
+  chatId    String
+  senderId  String
+  text      String?
+  type      MessageType   @default(TEXT)
+  status    MessageStatus @default(SENT)
+  replyToId String?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  deletedAt DateTime?
+
+  chat    Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  sender  User     @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  replyTo Message? @relation("messageReplies", fields: [replyToId], references: [id])
+  replies Message[] @relation("messageReplies")
+  media   Media[]
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  VIDEO
+  AUDIO
+  VOICE
+  FILE
+  SYSTEM
+}
+
+enum MessageStatus {
+  SENT
+  DELIVERED
+  READ
+}
+
+model Media {
+  id         String    @id @default(uuid())
+  url        String
+  filename   String
+  mimeType   String
+  size       Int
+  width      Int?
+  height     Int?
+  duration   Float?
+  thumbnailUrl String?
+  messageId  String?
+  postId     String?
+  commentId  String?
+  uploaderId String
+  createdAt  DateTime  @default(now())
+
+  message  Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  post     Post?    @relation(fields: [postId], references: [id], onDelete: Cascade)
+  comment  Comment? @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  uploader User     @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
+}
+
+// === WALL / POSTS ===
+
+model Post {
+  id        String   @id @default(uuid())
+  authorId  String
+  text      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+
+  author   User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  likes    PostLike[]
+  comments Comment[]
+  media    Media[]
+}
+
+model PostLike {
+  id        String   @id @default(uuid())
+  postId    String
+  userId    String
+  reaction  String   @default("like")
+  createdAt DateTime @default(now())
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, userId])
+}
+
+model Comment {
+  id        String      @id @default(uuid())
+  postId    String
+  authorId  String
+  text      String?
+  type      CommentType @default(TEXT)
+  parentId  String?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  deletedAt DateTime?
+
+  post     Post          @relation(fields: [postId], references: [id], onDelete: Cascade)
+  author   User          @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  parent   Comment?      @relation("commentReplies", fields: [parentId], references: [id])
+  replies  Comment[]     @relation("commentReplies")
+  likes    CommentLike[]
+  media    Media[]
+}
+
+enum CommentType {
+  TEXT
+  VOICE
+}
+
+model CommentLike {
+  id        String   @id @default(uuid())
+  commentId String
+  userId    String
+  createdAt DateTime @default(now())
+
+  comment Comment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([commentId, userId])
+}
+
+// === CALLS ===
+
+model Call {
+  id          String     @id @default(uuid())
+  initiatorId String
+  type        CallType
+  status      CallStatus @default(RINGING)
+  startedAt   DateTime?
+  endedAt     DateTime?
+  createdAt   DateTime   @default(now())
+
+  initiator    User              @relation("callInitiator", fields: [initiatorId], references: [id])
+  participants CallParticipant[]
+}
+
+enum CallType {
+  AUDIO
+  VIDEO
+  SCREEN_SHARE
+}
+
+enum CallStatus {
+  RINGING
+  ACTIVE
+  ENDED
+  MISSED
+  DECLINED
+}
+
+model CallParticipant {
+  id       String    @id @default(uuid())
+  callId   String
+  userId   String
+  joinedAt DateTime  @default(now())
+  leftAt   DateTime?
+
+  call Call @relation(fields: [callId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([callId, userId])
+}
+
+// === NOTIFICATIONS ===
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String?
+  data      Json?
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+enum NotificationType {
+  MESSAGE
+  CALL
+  POST_LIKE
+  COMMENT
+  CONTACT_REQUEST
+}

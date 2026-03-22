@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  html, body, #root {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  body {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(100, 116, 139, 0.3);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(100, 116, 139, 0.5);
+  }
+}
+
+@layer components {
+  .glass {
+    @apply bg-dark-900/80 backdrop-blur-xl border border-dark-700/50;
+  }
+
+  .glass-light {
+    @apply bg-dark-800/60 backdrop-blur-lg border border-dark-700/30;
+  }
+
+  .btn-primary {
+    @apply bg-primary-600 hover:bg-primary-700 text-white font-medium px-4 py-2.5 rounded-xl
+           transition-all duration-200 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-ghost {
+    @apply hover:bg-dark-800/50 text-dark-300 hover:text-white px-3 py-2 rounded-xl
+           transition-all duration-200;
+  }
+
+  .input-field {
+    @apply w-full bg-dark-800/50 border border-dark-700/50 rounded-xl px-4 py-3
+           text-white placeholder:text-dark-500 focus:outline-none focus:border-primary-500/50
+           focus:ring-1 focus:ring-primary-500/30 transition-all duration-200;
+  }
+
+  .chat-bubble-sent {
+    @apply bg-primary-600 text-white rounded-2xl rounded-br-md px-4 py-2.5;
+  }
+
+  .chat-bubble-received {
+    @apply bg-dark-800 text-dark-100 rounded-2xl rounded-bl-md px-4 py-2.5;
+  }
+
+  .sidebar-item {
+    @apply flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer
+           transition-all duration-150 hover:bg-dark-800/60;
+  }
+
+  .sidebar-item-active {
+    @apply bg-primary-600/20 text-primary-400;
+  }
+}
+
+@layer utilities {
+  .safe-top { padding-top: env(safe-area-inset-top); }
+  .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+  .safe-left { padding-left: env(safe-area-inset-left); }
+  .safe-right { padding-right: env(safe-area-inset-right); }
+}
