@@ -67,7 +67,9 @@ export default function CallModal() {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
+  const remoteScreenAudioRef = useRef<HTMLAudioElement>(null);
   const remoteScreenRef = useRef<HTMLVideoElement>(null);
+  const mainRemoteStreamIdRef = useRef<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const iceCandidateQueue = useRef<RTCIceCandidateInit[]>([]);
   const callRef = useRef<CallState>(EMPTY_CALL);
@@ -107,6 +109,8 @@ export default function CallModal() {
       if (ref.current) ref.current.srcObject = null;
     });
     if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
+    if (remoteScreenAudioRef.current) remoteScreenAudioRef.current.srcObject = null;
+    mainRemoteStreamIdRef.current = null;
     iceCandidateQueue.current = [];
     setCallDuration(0);
     setIsMuted(false);
@@ -150,8 +154,9 @@ export default function CallModal() {
       log('ICE candidate error:', e?.url, e?.errorText);
     };
 
-    // Track handler — store streams in refs, sync to DOM via effects
-    const remoteStreamTypes = new Map<string, 'camera' | 'screen'>();
+    // Track handler — route camera/mic to main elements, screen to separate elements
+    // Key: never overwrite mic audio with screen audio
+    const screenStreamIds = new Set<string>();
     pc.ontrack = (e) => {
       if (!e.streams?.[0]) return;
       const stream = e.streams[0];
@@ -160,34 +165,54 @@ export default function CallModal() {
 
       log('ontrack:', track.kind, 'label:', track.label, 'streamId:', streamId);
 
-      // Detect screen share track (mirotalk pattern)
+      // Detect screen share video track (mirotalk pattern)
       const settings = track.getSettings?.() || {};
-      const isScreen =
+      const isScreenVideo = track.kind === 'video' && (
         (settings as any).displaySurface != null ||
         (settings as any).mediaSource === 'screen' ||
-        /screen|window|monitor|display/i.test(track.label || '');
+        /screen|window|monitor|display/i.test(track.label || '')
+      );
 
-      if (track.kind === 'video' && isScreen) {
-        remoteStreamTypes.set(streamId, 'screen');
-        remoteScreenStreamRef.current = stream;
-        setHasRemoteScreen(true);
-        // Sync to DOM immediately if element available
-        if (remoteScreenRef.current) remoteScreenRef.current.srcObject = stream;
+      // If this stream's video was screen share, mark the whole stream as screen
+      if (isScreenVideo) {
+        screenStreamIds.add(streamId);
+      }
+
+      // Is this stream a screen share stream?
+      const isScreenStream = screenStreamIds.has(streamId);
+
+      if (isScreenStream) {
+        // Screen share stream — video → screen video, audio → screen audio
+        if (track.kind === 'video') {
+          remoteScreenStreamRef.current = stream;
+          setHasRemoteScreen(true);
+          if (remoteScreenRef.current) remoteScreenRef.current.srcObject = stream;
+        } else if (track.kind === 'audio') {
+          // Screen audio → separate element (never touch mic audio)
+          if (remoteScreenAudioRef.current) remoteScreenAudioRef.current.srcObject = stream;
+        }
       } else {
-        if (!remoteStreamTypes.has(streamId)) remoteStreamTypes.set(streamId, 'camera');
+        // Camera/mic stream — set as main
+        if (!mainRemoteStreamIdRef.current) {
+          mainRemoteStreamIdRef.current = streamId;
+        }
         remoteStreamRef.current = stream;
-        // Sync to DOM immediately if elements available
         if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
         if (remoteAudioRef.current) remoteAudioRef.current.srcObject = stream;
       }
 
       // When remote screen share track ends → clear
       track.onended = () => {
-        if (remoteStreamTypes.get(streamId) === 'screen') {
-          remoteStreamTypes.delete(streamId);
-          remoteScreenStreamRef.current = null;
-          setHasRemoteScreen(false);
-          if (remoteScreenRef.current) remoteScreenRef.current.srcObject = null;
+        if (screenStreamIds.has(streamId)) {
+          screenStreamIds.delete(streamId);
+          if (track.kind === 'video') {
+            remoteScreenStreamRef.current = null;
+            setHasRemoteScreen(false);
+            if (remoteScreenRef.current) remoteScreenRef.current.srcObject = null;
+          }
+          if (track.kind === 'audio') {
+            if (remoteScreenAudioRef.current) remoteScreenAudioRef.current.srcObject = null;
+          }
         }
       };
     };
@@ -650,8 +675,9 @@ export default function CallModal() {
 
   return (
     <div className={`fixed inset-0 z-50 bg-dark-950/95 backdrop-blur-sm flex flex-col items-center justify-center ${isFullscreen ? '' : 'p-4'}`}>
-      {/* Hidden audio element — ALWAYS rendered so remote audio plays even before isConnected */}
+      {/* Hidden audio elements — ALWAYS rendered so audio plays even before isConnected */}
       <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
+      <audio ref={remoteScreenAudioRef} autoPlay playsInline className="hidden" />
 
       {/* Remote video / Avatar */}
       <div className="relative flex-1 w-full max-w-4xl flex items-center justify-center overflow-hidden">
