@@ -22,7 +22,12 @@ const ICE_SERVERS: RTCConfiguration = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.relay.metered.ca:80' },
+    { urls: 'turn:global.relay.metered.ca:80', username: 'open', credential: 'open' },
+    { urls: 'turn:global.relay.metered.ca:443', username: 'open', credential: 'open' },
+    { urls: 'turn:global.relay.metered.ca:443?transport=tcp', username: 'open', credential: 'open' },
   ],
+  iceCandidatePoolSize: 10,
 };
 
 const EMPTY_CALL: CallState = {
@@ -45,10 +50,13 @@ export default function CallModal() {
   const screenStreamRef = useRef<MediaStream | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteScreenRef = useRef<HTMLVideoElement>(null);
+  const [hasRemoteScreen, setHasRemoteScreen] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const iceCandidateQueue = useRef<RTCIceCandidateInit[]>([]);
   const callRef = useRef<CallState>(EMPTY_CALL);
   const endedRef = useRef(false);
+  const disconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Keep ref in sync with state
   useEffect(() => { callRef.current = call; }, [call]);
@@ -76,6 +84,12 @@ export default function CallModal() {
     }
     if (localVideoRef.current) localVideoRef.current.srcObject = null;
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+    if (remoteScreenRef.current) remoteScreenRef.current.srcObject = null;
+    setHasRemoteScreen(false);
+    if (disconnectTimerRef.current) {
+      clearTimeout(disconnectTimerRef.current);
+      disconnectTimerRef.current = null;
+    }
     iceCandidateQueue.current = [];
     setCallDuration(0);
     setIsMuted(false);
@@ -102,22 +116,55 @@ export default function CallModal() {
       }
     };
 
+    let remoteTrackCount = 0;
     pc.ontrack = (e) => {
-      if (remoteVideoRef.current && e.streams[0]) {
-        remoteVideoRef.current.srcObject = e.streams[0];
+      if (!e.streams[0]) return;
+      remoteTrackCount++;
+      // First video stream → main remote video (camera)
+      // Second video stream → screen share
+      if (e.track.kind === 'video' && remoteTrackCount > 2) {
+        // This is likely a screen share track (3rd+ track after audio+video)
+        if (remoteScreenRef.current) {
+          remoteScreenRef.current.srcObject = e.streams[0];
+          setHasRemoteScreen(true);
+        }
+      } else {
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = e.streams[0];
+        }
       }
     };
 
     pc.onconnectionstatechange = () => {
+      console.log('[WebRTC] connectionState:', pc.connectionState);
       if (pc.connectionState === 'connected') {
         setCall((prev) => ({ ...prev, isConnected: true }));
+        if (disconnectTimerRef.current) {
+          clearTimeout(disconnectTimerRef.current);
+          disconnectTimerRef.current = null;
+        }
         if (!timerRef.current) {
           timerRef.current = setInterval(() => {
             setCallDuration((d) => d + 1);
           }, 1000);
         }
       }
-      if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+      // 'disconnected' is often transient — wait 10s before ending
+      if (pc.connectionState === 'disconnected') {
+        if (!disconnectTimerRef.current) {
+          disconnectTimerRef.current = setTimeout(() => {
+            if (pcRef.current?.connectionState === 'disconnected' && !endedRef.current) {
+              endedRef.current = true;
+              const cid = callRef.current.callId;
+              if (cid) socket?.emit('call:end', { callId: cid });
+              cleanup();
+              setCall(EMPTY_CALL);
+            }
+          }, 10000);
+        }
+      }
+      // 'failed' is terminal — end immediately
+      if (pc.connectionState === 'failed') {
         if (!endedRef.current) {
           endedRef.current = true;
           const cid = callRef.current.callId;
@@ -227,14 +274,22 @@ export default function CallModal() {
       stopScreenShare();
     } else {
       try {
-        const screen = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        const screen = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
         screenStreamRef.current = screen;
-        const videoTrack = screen.getVideoTracks()[0];
-        const sender = pcRef.current?.getSenders().find((s) => s.track?.kind === 'video');
-        if (sender) await sender.replaceTrack(videoTrack);
-        videoTrack.onended = () => stopScreenShare();
+        const screenVideoTrack = screen.getVideoTracks()[0];
+
+        // Add screen track as additional sender (keeps camera track too)
+        if (pcRef.current && screenVideoTrack) {
+          pcRef.current.addTrack(screenVideoTrack, screen);
+        }
+
+        screenVideoTrack.onended = () => stopScreenShare();
         setIsScreenSharing(true);
-        if (localVideoRef.current) localVideoRef.current.srcObject = screen;
+
+        // Show screen in local preview
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = screen;
+        }
       } catch (err) {
         console.error('Screen share error:', err);
       }
@@ -242,15 +297,18 @@ export default function CallModal() {
   };
 
   const stopScreenShare = () => {
-    if (screenStreamRef.current) {
-      screenStreamRef.current.getTracks().forEach((t) => t.stop());
+    if (screenStreamRef.current && pcRef.current) {
+      const screenTracks = screenStreamRef.current.getTracks();
+      // Remove screen track senders from peer connection
+      pcRef.current.getSenders().forEach((sender) => {
+        if (sender.track && screenTracks.includes(sender.track)) {
+          pcRef.current?.removeTrack(sender);
+        }
+      });
+      screenTracks.forEach((t) => t.stop());
       screenStreamRef.current = null;
     }
-    const videoTrack = localStreamRef.current?.getVideoTracks()[0];
-    if (videoTrack) {
-      const sender = pcRef.current?.getSenders().find((s) => s.track?.kind === 'video');
-      if (sender) sender.replaceTrack(videoTrack);
-    }
+    // Restore camera preview
     if (localVideoRef.current && localStreamRef.current) {
       localVideoRef.current.srcObject = localStreamRef.current;
     }
@@ -283,57 +341,72 @@ export default function CallModal() {
 
     // CALLER: callee accepted → get media and send offer
     const onCallAccepted = async (data: { callId: string; userId: string }) => {
-      const c = callRef.current;
-      if (!c.isActive || c.callId !== data.callId) return;
+      try {
+        const c = callRef.current;
+        if (!c.isActive || c.callId !== data.callId) return;
 
-      const remoteUid = data.userId;
-      setCall((prev) => ({ ...prev, isIncoming: false, remoteUserId: remoteUid }));
+        const remoteUid = data.userId;
+        setCall((prev) => ({ ...prev, isIncoming: false, remoteUserId: remoteUid }));
 
-      const stream = await getLocalStream(c.type);
-      if (!stream) return;
+        const stream = await getLocalStream(c.type);
+        if (!stream) { console.error('[Call] Failed to get local stream'); return; }
 
-      const pc = createPeerConnection(remoteUid, data.callId);
-      stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+        const pc = createPeerConnection(remoteUid, data.callId);
+        stream.getTracks().forEach((t) => pc.addTrack(t, stream));
 
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
 
-      socket.emit('webrtc:offer', {
-        callId: data.callId,
-        targetUserId: remoteUid,
-        offer,
-      });
+        console.log('[Call] Sending offer to', remoteUid);
+        socket.emit('webrtc:offer', {
+          callId: data.callId,
+          targetUserId: remoteUid,
+          offer,
+        });
+      } catch (err) {
+        console.error('[Call] onCallAccepted error:', err);
+      }
     };
 
     // CALLEE: receives offer from caller → create answer
     const onOffer = async (data: {
       callId: string; offer: RTCSessionDescriptionInit; userId: string;
     }) => {
-      const c = callRef.current;
-      if (!c.isActive) return;
+      try {
+        const c = callRef.current;
+        if (!c.isActive) return;
 
-      const pc = pcRef.current;
-      if (!pc) return;
+        const pc = pcRef.current;
+        if (!pc) { console.error('[Call] No peer connection for offer'); return; }
 
-      await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
+        await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
 
-      socket.emit('webrtc:answer', {
-        callId: data.callId,
-        targetUserId: data.userId,
-        answer,
-      });
+        console.log('[Call] Sending answer to', data.userId);
+        socket.emit('webrtc:answer', {
+          callId: data.callId,
+          targetUserId: data.userId,
+          answer,
+        });
 
-      await flushIceCandidates();
+        await flushIceCandidates();
+      } catch (err) {
+        console.error('[Call] onOffer error:', err);
+      }
     };
 
     // CALLER: receives answer from callee
     const onAnswer = async (data: { answer: RTCSessionDescriptionInit; callId: string }) => {
-      const pc = pcRef.current;
-      if (!pc) return;
-      await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
-      await flushIceCandidates();
+      try {
+        const pc = pcRef.current;
+        if (!pc) return;
+        await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+        await flushIceCandidates();
+        console.log('[Call] Answer set, ICE flushed');
+      } catch (err) {
+        console.error('[Call] onAnswer error:', err);
+      }
     };
 
     // BOTH: ICE candidates
@@ -436,12 +509,21 @@ export default function CallModal() {
       {/* Remote video / Avatar */}
       <div className="relative flex-1 w-full max-w-4xl flex items-center justify-center overflow-hidden">
         {showVideo && call.isConnected ? (
-          <video
-            ref={remoteVideoRef}
-            autoPlay
-            playsInline
-            className="w-full h-full max-h-[70vh] object-contain rounded-2xl bg-dark-900"
-          />
+          <div className="relative w-full h-full flex items-center justify-center">
+            {/* Main remote video (camera or screen share if active) */}
+            <video
+              ref={hasRemoteScreen ? remoteScreenRef : remoteVideoRef}
+              autoPlay
+              playsInline
+              className="w-full h-full max-h-[70vh] object-contain rounded-2xl bg-dark-900"
+            />
+            {/* Remote camera PiP when screen share is active */}
+            {hasRemoteScreen && (
+              <div className="absolute top-4 right-4 w-36 h-24 rounded-xl overflow-hidden border-2 border-dark-600 shadow-2xl bg-dark-900 z-10">
+                <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
+              </div>
+            )}
+          </div>
         ) : (
           <div className="flex flex-col items-center gap-4">
             <div className="w-32 h-32 rounded-full bg-primary-600/30 flex items-center justify-center text-4xl font-bold text-primary-300 overflow-hidden">
