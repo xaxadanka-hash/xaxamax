@@ -18,17 +18,17 @@ interface CallState {
   remoteUser: { id: string; displayName: string; avatar: string | null } | null;
 }
 
-// Production ICE config — reliable Google STUN servers only
-// (metered.ca TURN requires paid credentials; broken TURN causes ICE errors)
+// Production ICE config (simple-peer + mirotalk patterns)
 const RTC_CONFIG: RTCConfiguration = {
   iceServers: [
-    { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
-    { urls: ['stun:stun2.l.google.com:19302', 'stun:stun3.l.google.com:19302'] },
-    { urls: ['stun:stun4.l.google.com:19302'] },
+    { urls: ['stun:stun.l.google.com:19302', 'stun:global.stun.twilio.com:3478'] },
+    { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] },
   ],
   iceCandidatePoolSize: 5,
   bundlePolicy: 'max-bundle',
   rtcpMuxPolicy: 'require',
+  // @ts-ignore sdpSemantics needed for cross-browser compat (simple-peer pattern)
+  sdpSemantics: 'unified-plan'
 };
 
 const ICE_RESTART_MAX = 3;
@@ -74,6 +74,8 @@ export default function CallModal() {
   const isCallerRef = useRef(false);
   const connTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const iceFailedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isNegotiatingRef = useRef(false);     // simple-peer: prevent concurrent negotiations
+  const queuedNegotiationRef = useRef(false); // simple-peer: queue renegotiation requests
 
   useEffect(() => { callRef.current = call; }, [call]);
 
@@ -82,6 +84,8 @@ export default function CallModal() {
     endedRef.current = true;
     makingOfferRef.current = false;
     iceRestartCountRef.current = 0;
+    isNegotiatingRef.current = false;
+    queuedNegotiationRef.current = false;
     if (pcRef.current) {
       pcRef.current.onicecandidate = null;
       pcRef.current.ontrack = null;
@@ -216,26 +220,46 @@ export default function CallModal() {
       };
     };
 
-    // onnegotiationneeded — auto-renegotiation (mirotalk key pattern)
-    // Fires when addTrack/removeTrack is called (e.g., screen share toggle)
-    pc.onnegotiationneeded = async () => {
-      if (!isCallerRef.current) return; // Only offerer renegotiates
-      try {
-        makingOfferRef.current = true;
-        const offer = await pc.createOffer();
-        if (pc.signalingState !== 'stable') return; // Abort if state changed
-        await pc.setLocalDescription(offer);
-        log('onnegotiationneeded → sending offer');
-        socket?.emit('webrtc:offer', {
-          callId: callRef.current.callId || callId,
-          targetUserId: remoteUserId,
-          offer: pc.localDescription,
-        });
-      } catch (err) {
-        logErr('onnegotiationneeded error:', err);
-      } finally {
-        makingOfferRef.current = false;
+    // onnegotiationneeded — batched negotiation (simple-peer pattern)
+    // Multiple addTrack() calls fire this per-track. We batch them into one offer.
+    pc.onnegotiationneeded = () => {
+      if (endedRef.current) return;
+      if (!isCallerRef.current) return; // Only caller/initiator creates offers
+
+      if (isNegotiatingRef.current) {
+        // Already negotiating — queue for when signalingState returns to stable
+        log('onnegotiationneeded — already negotiating, queueing');
+        queuedNegotiationRef.current = true;
+        return;
       }
+
+      log('onnegotiationneeded → creating offer');
+      isNegotiatingRef.current = true;
+      makingOfferRef.current = true;
+
+      // Use setTimeout(0) to batch multiple synchronous addTrack calls (simple-peer pattern)
+      setTimeout(async () => {
+        try {
+          if (endedRef.current || !pcRef.current) return;
+          const offer = await pc.createOffer();
+          if (endedRef.current || !pcRef.current) return;
+          if (pc.signalingState !== 'stable') {
+            log('onnegotiationneeded — signaling not stable, aborting offer');
+            return;
+          }
+          await pc.setLocalDescription(offer);
+          log('Sending offer');
+          socket?.emit('webrtc:offer', {
+            callId: callRef.current.callId || callId,
+            targetUserId: remoteUserId,
+            offer: pc.localDescription,
+          });
+        } catch (err) {
+          logErr('onnegotiationneeded error:', err);
+        } finally {
+          makingOfferRef.current = false;
+        }
+      }, 0);
     };
 
     // Helper: mark call connected and clear timeouts
@@ -252,8 +276,9 @@ export default function CallModal() {
       }
     };
 
-    // Connection state
+    // Connection state (simple-peer: check destroyed in every callback)
     pc.onconnectionstatechange = () => {
+      if (endedRef.current) return;
       log('connectionState:', pc.connectionState);
       if (pc.connectionState === 'connected') markConnected();
       if (pc.connectionState === 'failed') {
@@ -262,12 +287,12 @@ export default function CallModal() {
           iceRestartCountRef.current++;
           pc.restartIce();
         }
-        // Callee: don't end call, wait for caller restart
       }
     };
 
     // ICE connection state — more reliable for detecting actual connectivity
     pc.oniceconnectionstatechange = () => {
+      if (endedRef.current) return;
       log('iceConnectionState:', pc.iceConnectionState);
 
       if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
@@ -276,6 +301,12 @@ export default function CallModal() {
 
       if (pc.iceConnectionState === 'disconnected') {
         log('ICE disconnected — waiting for automatic recovery...');
+      }
+
+      // ICE closed → clean end (simple-peer pattern)
+      if (pc.iceConnectionState === 'closed') {
+        log('ICE closed');
+        if (!endedRef.current) endCall();
       }
 
       // ICE failed → caller retries; callee waits with timeout
@@ -304,8 +335,20 @@ export default function CallModal() {
       }
     };
 
+    // Signaling state — flush queued negotiations when stable (simple-peer pattern)
     pc.onsignalingstatechange = () => {
+      if (endedRef.current) return;
       log('signalingState:', pc.signalingState);
+
+      if (pc.signalingState === 'stable') {
+        isNegotiatingRef.current = false;
+        if (queuedNegotiationRef.current) {
+          log('Flushing queued negotiation');
+          queuedNegotiationRef.current = false;
+          // Re-trigger onnegotiationneeded
+          pc.onnegotiationneeded?.(new Event('negotiationneeded'));
+        }
+      }
     };
 
     pcRef.current = pc;
@@ -479,15 +522,25 @@ export default function CallModal() {
         // isCaller=true → this side creates offers and handles renegotiation
         const pc = createPeerConnection(remoteUid, data.callId, true);
 
-        // Add tracks — this fires onnegotiationneeded which auto-creates offer
+        // Add ALL tracks first — then onnegotiationneeded fires once (batched via setTimeout(0))
         stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+
+        // Connection timeout: if not connected in 30s, end call
+        connTimeoutRef.current = setTimeout(() => {
+          if (!callRef.current.isConnected && !endedRef.current) {
+            log('Connection timeout (30s) → ending call');
+            endCall();
+          }
+        }, CONNECTION_TIMEOUT_MS);
 
         // Fallback: if onnegotiationneeded didn't fire (some browsers), create offer manually
         setTimeout(async () => {
+          if (endedRef.current || !pcRef.current) return;
           if (pc.signalingState === 'stable' && !pc.localDescription) {
             log('Fallback: manually creating offer');
             try {
               const offer = await pc.createOffer();
+              if (endedRef.current) return;
               await pc.setLocalDescription(offer);
               socket.emit('webrtc:offer', {
                 callId: data.callId,
@@ -498,7 +551,7 @@ export default function CallModal() {
               logErr('Fallback offer error:', err);
             }
           }
-        }, 500);
+        }, 1000);
       } catch (err) {
         logErr('onCallAccepted error:', err);
       }
@@ -509,12 +562,13 @@ export default function CallModal() {
       callId: string; offer: RTCSessionDescriptionInit; userId: string;
     }) => {
       try {
+        if (endedRef.current) return;
         const c = callRef.current;
         if (!c.isActive) return;
         const pc = pcRef.current;
         if (!pc) { logErr('No PC for offer'); return; }
 
-        log('webrtc:offer received from', data.userId);
+        log('webrtc:offer received, signalingState:', pc.signalingState);
 
         // Perfect negotiation: handle offer collision (glare)
         const offerCollision = makingOfferRef.current || pc.signalingState !== 'stable';
@@ -526,15 +580,19 @@ export default function CallModal() {
         }
 
         if (offerCollision && isPolite) {
-          // Rollback current local description
+          log('Offer collision — polite peer rolling back');
           await pc.setLocalDescription({ type: 'rollback' } as any);
         }
 
         await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+        if (endedRef.current) return;
+
         const answer = await pc.createAnswer();
+        if (endedRef.current) return;
+
         await pc.setLocalDescription(answer);
 
-        log('Sending answer to', data.userId);
+        log('Sending answer');
         socket.emit('webrtc:answer', {
           callId: data.callId,
           targetUserId: data.userId,
@@ -550,6 +608,7 @@ export default function CallModal() {
     // CALLER: receives answer
     const onAnswer = async (data: { answer: RTCSessionDescriptionInit; callId: string }) => {
       try {
+        if (endedRef.current) return;
         const pc = pcRef.current;
         if (!pc) return;
         if (pc.signalingState !== 'have-local-offer') {
@@ -558,7 +617,10 @@ export default function CallModal() {
         }
         log('webrtc:answer received');
         await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+        if (endedRef.current) return;
         await flushIceCandidates();
+        // Mark negotiation complete → signalingState will go to 'stable' → flush queued
+        isNegotiatingRef.current = false;
       } catch (err) {
         logErr('onAnswer error:', err);
       }
