@@ -76,6 +76,7 @@ export default function CallModal() {
   const iceFailedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isNegotiatingRef = useRef(false);     // simple-peer: prevent concurrent negotiations
   const queuedNegotiationRef = useRef(false); // simple-peer: queue renegotiation requests
+  const firstNegotiationRef = useRef(true);   // simple-peer: callee skips first negotiation
 
   useEffect(() => { callRef.current = call; }, [call]);
 
@@ -86,6 +87,7 @@ export default function CallModal() {
     iceRestartCountRef.current = 0;
     isNegotiatingRef.current = false;
     queuedNegotiationRef.current = false;
+    firstNegotiationRef.current = true;
     if (pcRef.current) {
       pcRef.current.onicecandidate = null;
       pcRef.current.ontrack = null;
@@ -157,57 +159,50 @@ export default function CallModal() {
       log('ICE candidate error:', e?.url, e?.errorText);
     };
 
-    // Track handler — route camera/mic to main elements, screen to separate elements
-    // Key: never overwrite mic audio with screen audio
-    const screenStreamIds = new Set<string>();
+    // Track handler — route by stream ID, not track properties
+    // First stream = camera/mic (main). Any different stream ID = screen share.
+    // This avoids the race condition where screen audio arrives before screen video
+    // and gets misclassified as mic audio (displaySurface only works on video tracks).
     pc.ontrack = (e) => {
+      if (endedRef.current) return;
       if (!e.streams?.[0]) return;
       const stream = e.streams[0];
       const track = e.track;
       const streamId = stream.id;
 
-      log('ontrack:', track.kind, 'label:', track.label, 'streamId:', streamId);
+      log('ontrack:', track.kind, 'label:', track.label, 'streamId:', streamId,
+        'mainStreamId:', mainRemoteStreamIdRef.current);
 
-      // Detect screen share video track (mirotalk pattern)
-      const settings = track.getSettings?.() || {};
-      const isScreenVideo = track.kind === 'video' && (
-        (settings as any).displaySurface != null ||
-        (settings as any).mediaSource === 'screen' ||
-        /screen|window|monitor|display/i.test(track.label || '')
-      );
-
-      // If this stream's video was screen share, mark the whole stream as screen
-      if (isScreenVideo) {
-        screenStreamIds.add(streamId);
+      // First stream we ever receive = camera/mic (main)
+      if (!mainRemoteStreamIdRef.current) {
+        mainRemoteStreamIdRef.current = streamId;
+        log('Main stream set:', streamId);
       }
 
-      // Is this stream a screen share stream?
-      const isScreenStream = screenStreamIds.has(streamId);
+      const isMainStream = streamId === mainRemoteStreamIdRef.current;
 
-      if (isScreenStream) {
-        // Screen share stream — video → screen video, audio → screen audio
+      if (isMainStream) {
+        // Camera/mic stream — always route to main elements
+        remoteStreamRef.current = stream;
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
+        if (remoteAudioRef.current) remoteAudioRef.current.srcObject = stream;
+      } else {
+        // Different stream ID = screen share (video + audio)
+        log('Screen share stream detected:', streamId);
         if (track.kind === 'video') {
           remoteScreenStreamRef.current = stream;
           setHasRemoteScreen(true);
           if (remoteScreenRef.current) remoteScreenRef.current.srcObject = stream;
-        } else if (track.kind === 'audio') {
+        }
+        if (track.kind === 'audio') {
           // Screen audio → separate element (never touch mic audio)
           if (remoteScreenAudioRef.current) remoteScreenAudioRef.current.srcObject = stream;
         }
-      } else {
-        // Camera/mic stream — set as main
-        if (!mainRemoteStreamIdRef.current) {
-          mainRemoteStreamIdRef.current = streamId;
-        }
-        remoteStreamRef.current = stream;
-        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
-        if (remoteAudioRef.current) remoteAudioRef.current.srcObject = stream;
       }
 
-      // When remote screen share track ends → clear
+      // When remote screen share track ends → clear screen elements
       track.onended = () => {
-        if (screenStreamIds.has(streamId)) {
-          screenStreamIds.delete(streamId);
+        if (streamId !== mainRemoteStreamIdRef.current) {
           if (track.kind === 'video') {
             remoteScreenStreamRef.current = null;
             setHasRemoteScreen(false);
@@ -220,31 +215,40 @@ export default function CallModal() {
       };
     };
 
-    // onnegotiationneeded — batched negotiation (simple-peer pattern)
-    // Multiple addTrack() calls fire this per-track. We batch them into one offer.
+    // onnegotiationneeded — BOTH peers can renegotiate (perfect negotiation pattern)
+    // Callee skips only the FIRST negotiation (caller initiates it).
+    // Subsequent negotiations (screen share, video toggle) work for both sides.
+    // Batched via setTimeout(0) to coalesce multiple addTrack calls (simple-peer).
     pc.onnegotiationneeded = () => {
       if (endedRef.current) return;
-      if (!isCallerRef.current) return; // Only caller/initiator creates offers
+
+      // Callee: skip initial negotiation (caller will send the first offer)
+      if (!isCallerRef.current && firstNegotiationRef.current) {
+        firstNegotiationRef.current = false;
+        log('onnegotiationneeded — callee skipping first (caller will offer)');
+        return;
+      }
+      firstNegotiationRef.current = false;
 
       if (isNegotiatingRef.current) {
-        // Already negotiating — queue for when signalingState returns to stable
         log('onnegotiationneeded — already negotiating, queueing');
         queuedNegotiationRef.current = true;
         return;
       }
 
-      log('onnegotiationneeded → creating offer');
+      log('onnegotiationneeded → creating offer (isCaller:', isCallerRef.current, ')');
       isNegotiatingRef.current = true;
       makingOfferRef.current = true;
 
-      // Use setTimeout(0) to batch multiple synchronous addTrack calls (simple-peer pattern)
+      // setTimeout(0) batches multiple synchronous addTrack calls into one offer
       setTimeout(async () => {
         try {
           if (endedRef.current || !pcRef.current) return;
           const offer = await pc.createOffer();
           if (endedRef.current || !pcRef.current) return;
           if (pc.signalingState !== 'stable') {
-            log('onnegotiationneeded — signaling not stable, aborting offer');
+            log('onnegotiationneeded — signaling not stable, will retry on stable');
+            queuedNegotiationRef.current = true;
             return;
           }
           await pc.setLocalDescription(offer);
@@ -557,7 +561,7 @@ export default function CallModal() {
       }
     };
 
-    // CALLEE: receives offer → set remote desc → create answer
+    // BOTH: receives offer → set remote desc → create answer (perfect negotiation)
     const onOffer = async (data: {
       callId: string; offer: RTCSessionDescriptionInit; userId: string;
     }) => {
