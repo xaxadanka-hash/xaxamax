@@ -18,27 +18,22 @@ interface CallState {
   remoteUser: { id: string; displayName: string; avatar: string | null } | null;
 }
 
-// Production ICE config: STUN + TURN (like mirotalk)
+// Production ICE config — reliable Google STUN servers only
+// (metered.ca TURN requires paid credentials; broken TURN causes ICE errors)
 const RTC_CONFIG: RTCConfiguration = {
   iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun.relay.metered.ca:80' },
-    {
-      urls: [
-        'turn:global.relay.metered.ca:80',
-        'turn:global.relay.metered.ca:443',
-        'turn:global.relay.metered.ca:443?transport=tcp',
-      ],
-      username: 'open',
-      credential: 'open',
-    },
+    { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+    { urls: ['stun:stun2.l.google.com:19302', 'stun:stun3.l.google.com:19302'] },
+    { urls: ['stun:stun4.l.google.com:19302'] },
   ],
-  iceCandidatePoolSize: 10,
-  iceTransportPolicy: 'all',
+  iceCandidatePoolSize: 5,
   bundlePolicy: 'max-bundle',
   rtcpMuxPolicy: 'require',
 };
+
+const ICE_RESTART_MAX = 3;
+const CONNECTION_TIMEOUT_MS = 30_000; // 30s to establish connection
+const ICE_FAILED_WAIT_MS = 10_000;  // callee waits 10s for caller restart
 
 const EMPTY_CALL: CallState = {
   isActive: false, isIncoming: false, isConnected: false,
@@ -77,6 +72,8 @@ export default function CallModal() {
   const makingOfferRef = useRef(false);
   const iceRestartCountRef = useRef(0);
   const isCallerRef = useRef(false);
+  const connTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const iceFailedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { callRef.current = call; }, [call]);
 
@@ -105,6 +102,8 @@ export default function CallModal() {
     remoteStreamRef.current = null;
     remoteScreenStreamRef.current = null;
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    if (connTimeoutRef.current) { clearTimeout(connTimeoutRef.current); connTimeoutRef.current = null; }
+    if (iceFailedTimeoutRef.current) { clearTimeout(iceFailedTimeoutRef.current); iceFailedTimeoutRef.current = null; }
     [localVideoRef, remoteVideoRef, remoteScreenRef].forEach((ref) => {
       if (ref.current) ref.current.srcObject = null;
     });
@@ -239,15 +238,31 @@ export default function CallModal() {
       }
     };
 
-    // Connection state (mirotalk: only log, never auto-disconnect on 'disconnected')
+    // Helper: mark call connected and clear timeouts
+    const markConnected = () => {
+      iceRestartCountRef.current = 0;
+      if (connTimeoutRef.current) { clearTimeout(connTimeoutRef.current); connTimeoutRef.current = null; }
+      if (iceFailedTimeoutRef.current) { clearTimeout(iceFailedTimeoutRef.current); iceFailedTimeoutRef.current = null; }
+      setCall((prev) => {
+        if (prev.isConnected) return prev; // avoid unnecessary re-render
+        return { ...prev, isConnected: true };
+      });
+      if (!timerRef.current) {
+        timerRef.current = setInterval(() => setCallDuration((d) => d + 1), 1000);
+      }
+    };
+
+    // Connection state
     pc.onconnectionstatechange = () => {
       log('connectionState:', pc.connectionState);
-      if (pc.connectionState === 'connected') {
-        iceRestartCountRef.current = 0;
-        setCall((prev) => ({ ...prev, isConnected: true }));
-        if (!timerRef.current) {
-          timerRef.current = setInterval(() => setCallDuration((d) => d + 1), 1000);
+      if (pc.connectionState === 'connected') markConnected();
+      if (pc.connectionState === 'failed') {
+        log('connectionState failed — attempting recovery');
+        if (isCallerRef.current && iceRestartCountRef.current < ICE_RESTART_MAX) {
+          iceRestartCountRef.current++;
+          pc.restartIce();
         }
+        // Callee: don't end call, wait for caller restart
       }
     };
 
@@ -256,29 +271,35 @@ export default function CallModal() {
       log('iceConnectionState:', pc.iceConnectionState);
 
       if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
-        iceRestartCountRef.current = 0;
-        setCall((prev) => ({ ...prev, isConnected: true }));
-        if (!timerRef.current) {
-          timerRef.current = setInterval(() => setCallDuration((d) => d + 1), 1000);
-        }
+        markConnected();
       }
 
-      // ICE restart on disconnected (mirotalk pattern: don't kill, try restart)
       if (pc.iceConnectionState === 'disconnected') {
-        log('ICE disconnected — waiting for recovery...');
-        // Browser will attempt recovery automatically; we just log
+        log('ICE disconnected — waiting for automatic recovery...');
       }
 
-      // ICE failed → attempt ICE restart up to 3 times (like production calling apps)
+      // ICE failed → caller retries; callee waits with timeout
       if (pc.iceConnectionState === 'failed') {
-        if (iceRestartCountRef.current < 3 && isCallerRef.current) {
-          iceRestartCountRef.current++;
-          log(`ICE failed → restart attempt ${iceRestartCountRef.current}/3`);
-          pc.restartIce();
-          // restartIce() will trigger onnegotiationneeded → new offer
+        if (isCallerRef.current) {
+          if (iceRestartCountRef.current < ICE_RESTART_MAX) {
+            iceRestartCountRef.current++;
+            log(`ICE failed → restart attempt ${iceRestartCountRef.current}/${ICE_RESTART_MAX}`);
+            pc.restartIce();
+          } else {
+            log('ICE failed permanently (caller) → ending call');
+            endCall();
+          }
         } else {
-          log('ICE failed permanently → ending call');
-          endCall();
+          // Callee: wait for caller to restart ICE, timeout as safety net
+          log('ICE failed (callee) — waiting for caller restart...');
+          if (!iceFailedTimeoutRef.current) {
+            iceFailedTimeoutRef.current = setTimeout(() => {
+              if (pcRef.current?.iceConnectionState === 'failed') {
+                log('ICE still failed after wait → ending call');
+                endCall();
+              }
+            }, ICE_FAILED_WAIT_MS);
+          }
         }
       }
     };
