@@ -6,6 +6,7 @@ import { getSocket } from './services/socket';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import MainLayout from './components/layout/MainLayout';
+import CallModal from './components/call/CallModal';
 import { AnimatePresence } from 'framer-motion';
 
 function App() {
@@ -52,13 +53,16 @@ function App() {
   }
 
   return (
-    <AnimatePresence mode="wait">
-      <Routes>
-        <Route path="/login" element={!isAuthenticated ? <LoginPage /> : <Navigate to="/" />} />
-        <Route path="/register" element={!isAuthenticated ? <RegisterPage /> : <Navigate to="/" />} />
-        <Route path="/*" element={isAuthenticated ? <MainLayout /> : <Navigate to="/login" />} />
-      </Routes>
-    </AnimatePresence>
+    <>
+      <AnimatePresence mode="wait">
+        <Routes>
+          <Route path="/login" element={!isAuthenticated ? <LoginPage /> : <Navigate to="/" />} />
+          <Route path="/register" element={!isAuthenticated ? <RegisterPage /> : <Navigate to="/" />} />
+          <Route path="/*" element={isAuthenticated ? <MainLayout /> : <Navigate to="/login" />} />
+        </Routes>
+      </AnimatePresence>
+      {isAuthenticated && <CallModal />}
+    </>
   );
 }
 

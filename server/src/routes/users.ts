@@ -32,22 +32,7 @@ router.get('/search', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// Get user profile
-router.get('/:id', async (req: AuthRequest, res: Response) => {
-  try {
-    const user = await prisma.user.findUnique({
-      where: { id: req.params.id as string },
-      select: { id: true, phone: true, displayName: true, avatar: true, bio: true, isOnline: true, lastSeen: true, createdAt: true },
-    });
-    if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-    res.json(user);
-  } catch (err) {
-    console.error('Get user error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
-});
-
-// Update profile
+// Update profile (must be before /:id)
 router.put('/me', async (req: AuthRequest, res: Response) => {
   try {
     const { displayName, bio, avatar } = req.body;
@@ -63,6 +48,21 @@ router.put('/me', async (req: AuthRequest, res: Response) => {
     res.json(user);
   } catch (err) {
     console.error('Update profile error:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Get user profile (must be after /me routes)
+router.get('/:id', async (req: AuthRequest, res: Response) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.params.id as string },
+      select: { id: true, phone: true, displayName: true, avatar: true, bio: true, isOnline: true, lastSeen: true, createdAt: true },
+    });
+    if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+    res.json(user);
+  } catch (err) {
+    console.error('Get user error:', err);
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
