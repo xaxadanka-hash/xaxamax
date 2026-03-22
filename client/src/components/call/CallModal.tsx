@@ -62,8 +62,11 @@ export default function CallModal() {
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
+  const remoteScreenStreamRef = useRef<MediaStream | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement>(null);
   const remoteScreenRef = useRef<HTMLVideoElement>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const iceCandidateQueue = useRef<RTCIceCandidateInit[]>([]);
@@ -97,10 +100,13 @@ export default function CallModal() {
         ref.current = null;
       }
     });
+    remoteStreamRef.current = null;
+    remoteScreenStreamRef.current = null;
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     [localVideoRef, remoteVideoRef, remoteScreenRef].forEach((ref) => {
       if (ref.current) ref.current.srcObject = null;
     });
+    if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
     iceCandidateQueue.current = [];
     setCallDuration(0);
     setIsMuted(false);
@@ -144,13 +150,15 @@ export default function CallModal() {
       log('ICE candidate error:', e?.url, e?.errorText);
     };
 
-    // Track handler — detect camera vs screen share
-    const remoteStreams = new Map<string, 'camera' | 'screen'>();
+    // Track handler — store streams in refs, sync to DOM via effects
+    const remoteStreamTypes = new Map<string, 'camera' | 'screen'>();
     pc.ontrack = (e) => {
       if (!e.streams?.[0]) return;
       const stream = e.streams[0];
       const track = e.track;
       const streamId = stream.id;
+
+      log('ontrack:', track.kind, 'label:', track.label, 'streamId:', streamId);
 
       // Detect screen share track (mirotalk pattern)
       const settings = track.getSettings?.() || {};
@@ -160,22 +168,24 @@ export default function CallModal() {
         /screen|window|monitor|display/i.test(track.label || '');
 
       if (track.kind === 'video' && isScreen) {
-        remoteStreams.set(streamId, 'screen');
-        if (remoteScreenRef.current) {
-          remoteScreenRef.current.srcObject = stream;
-          setHasRemoteScreen(true);
-        }
+        remoteStreamTypes.set(streamId, 'screen');
+        remoteScreenStreamRef.current = stream;
+        setHasRemoteScreen(true);
+        // Sync to DOM immediately if element available
+        if (remoteScreenRef.current) remoteScreenRef.current.srcObject = stream;
       } else {
-        if (!remoteStreams.has(streamId)) remoteStreams.set(streamId, 'camera');
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = stream;
-        }
+        if (!remoteStreamTypes.has(streamId)) remoteStreamTypes.set(streamId, 'camera');
+        remoteStreamRef.current = stream;
+        // Sync to DOM immediately if elements available
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
+        if (remoteAudioRef.current) remoteAudioRef.current.srcObject = stream;
       }
 
       // When remote screen share track ends → clear
       track.onended = () => {
-        if (remoteStreams.get(streamId) === 'screen') {
-          remoteStreams.delete(streamId);
+        if (remoteStreamTypes.get(streamId) === 'screen') {
+          remoteStreamTypes.delete(streamId);
+          remoteScreenStreamRef.current = null;
           setHasRemoteScreen(false);
           if (remoteScreenRef.current) remoteScreenRef.current.srcObject = null;
         }
@@ -596,6 +606,33 @@ export default function CallModal() {
     return () => { delete (window as any).__xaxamaxInitiateCall; };
   }, [handleInitiateCall]);
 
+  // ─── SYNC STREAMS TO DOM ───────────────────────────────────
+  // ontrack fires BEFORE isConnected, so video elements may not exist yet.
+  // These effects re-assign srcObject when elements mount or streams change.
+  useEffect(() => {
+    if (remoteVideoRef.current && remoteStreamRef.current) {
+      remoteVideoRef.current.srcObject = remoteStreamRef.current;
+    }
+  }, [call.isConnected, hasLocalStream]);
+
+  useEffect(() => {
+    if (remoteAudioRef.current && remoteStreamRef.current) {
+      remoteAudioRef.current.srcObject = remoteStreamRef.current;
+    }
+  }, [call.isConnected]);
+
+  useEffect(() => {
+    if (remoteScreenRef.current && remoteScreenStreamRef.current) {
+      remoteScreenRef.current.srcObject = remoteScreenStreamRef.current;
+    }
+  }, [hasRemoteScreen]);
+
+  useEffect(() => {
+    if (localVideoRef.current && localStreamRef.current) {
+      localVideoRef.current.srcObject = localStreamRef.current;
+    }
+  }, [call.isConnected, hasLocalStream]);
+
   // ─── HELPERS ──────────────────────────────────────────────
   const formatDuration = (s: number) => {
     const m = Math.floor(s / 60);
@@ -613,23 +650,37 @@ export default function CallModal() {
 
   return (
     <div className={`fixed inset-0 z-50 bg-dark-950/95 backdrop-blur-sm flex flex-col items-center justify-center ${isFullscreen ? '' : 'p-4'}`}>
+      {/* Hidden audio element — ALWAYS rendered so remote audio plays even before isConnected */}
+      <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
+
       {/* Remote video / Avatar */}
       <div className="relative flex-1 w-full max-w-4xl flex items-center justify-center overflow-hidden">
         {showVideo && call.isConnected ? (
           <div className="relative w-full h-full flex items-center justify-center">
-            {/* Main video — screen share if available, otherwise camera */}
-            <video
-              ref={hasRemoteScreen ? remoteScreenRef : remoteVideoRef}
-              autoPlay
-              playsInline
-              className="w-full h-full max-h-[70vh] object-contain rounded-2xl bg-dark-900"
-            />
-            {/* Remote camera PiP when screen share active */}
+            {/* Remote screen share — main view when active */}
             {hasRemoteScreen && (
-              <div className="absolute top-4 right-4 w-40 h-28 rounded-xl overflow-hidden border-2 border-dark-600 shadow-2xl bg-dark-900 z-10">
-                <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
-              </div>
+              <video
+                ref={remoteScreenRef}
+                autoPlay
+                playsInline
+                className="w-full h-full max-h-[70vh] object-contain rounded-2xl bg-dark-900"
+              />
             )}
+            {/* Remote camera — main view normally, PiP when screen share active */}
+            <div className={hasRemoteScreen
+              ? 'absolute top-4 right-4 w-40 h-28 rounded-xl overflow-hidden border-2 border-dark-600 shadow-2xl bg-dark-900 z-10'
+              : 'w-full h-full flex items-center justify-center'
+            }>
+              <video
+                ref={remoteVideoRef}
+                autoPlay
+                playsInline
+                className={hasRemoteScreen
+                  ? 'w-full h-full object-cover'
+                  : 'w-full h-full max-h-[70vh] object-contain rounded-2xl bg-dark-900'
+                }
+              />
+            </div>
           </div>
         ) : (
           <div className="flex flex-col items-center gap-4">
