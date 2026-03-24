@@ -10,7 +10,7 @@ import { ru } from 'date-fns/locale';
 import {
   ArrowLeft, Send, Paperclip, Phone as PhoneIcon, Video,
   Monitor, Mic, X, Check, CheckCheck, Image, Pin, Reply as ReplyIcon,
-  Pencil, Users, Search,
+  Pencil, Users, Search, SmilePlus,
 } from 'lucide-react';
 import MessageContextMenu from './MessageContextMenu';
 import { VoiceRecorder, VoicePlayer } from './VoiceMessage';
@@ -734,27 +734,39 @@ export default function ChatView({ onBack }: ChatViewProps) {
                 </div>
               </div>
 
-              {/* Quick action buttons on hover */}
-              <div className="self-center flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+              {/* Quick action buttons */}
+              <div className="self-center flex gap-0.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                 {/* Quick react */}
                 <div className="relative">
                   <button
                     onClick={() => setReactionPicker(reactionPicker === msg.id ? null : msg.id)}
-                    className="p-1 text-dark-500 hover:text-yellow-400"
+                    className={`p-1.5 rounded-lg transition-colors ${
+                      reactionPicker === msg.id
+                        ? 'bg-primary-600/20 text-primary-300'
+                        : 'text-dark-500 hover:text-yellow-400 hover:bg-dark-800/60'
+                    }`}
+                    title="Реакция"
                   >
-                    <span className="text-sm">😊</span>
+                    <SmilePlus className="w-4 h-4" />
                   </button>
                   {reactionPicker === msg.id && (
-                    <div className={`absolute bottom-full ${isMine ? 'right-0' : 'left-0'} mb-1 flex gap-1 bg-dark-800 border border-dark-700 rounded-xl px-2 py-1.5 shadow-xl z-20`}>
+                    <div className={`absolute bottom-full ${isMine ? 'right-0' : 'left-0'} mb-1.5 flex gap-1 bg-dark-800 border border-dark-700 rounded-2xl px-2 py-1.5 shadow-xl z-20`}>
                       {REACTION_EMOJIS.map(e => (
-                        <button key={e} onClick={() => { reactMessage(msg.id, activeChat!.id, e); setReactionPicker(null); }} className="text-lg hover:scale-125 transition-transform">{e}</button>
+                        <button
+                          key={e}
+                          onClick={() => { reactMessage(msg.id, activeChat!.id, e); setReactionPicker(null); }}
+                          className="w-8 h-8 rounded-full text-lg hover:bg-dark-700/70 hover:scale-110 transition-transform"
+                        >
+                          {e}
+                        </button>
                       ))}
                     </div>
                   )}
                 </div>
                 <button
                   onClick={() => setReplyTo(msg)}
-                  className="p-1 text-dark-500 hover:text-primary-400"
+                  className="p-1.5 rounded-lg text-dark-500 hover:text-primary-400 hover:bg-dark-800/60 transition-colors"
+                  title="Ответить"
                 >
                   <ReplyIcon className="w-4 h-4" />
                 </button>

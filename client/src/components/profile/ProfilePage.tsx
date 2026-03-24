@@ -4,7 +4,7 @@ import { useAuthStore } from '../../store/authStore';
 import { useChatStore } from '../../store/chatStore';
 import {
   Camera, Save, Loader2, UserPlus, UserMinus, MessageCircle,
-  Heart, MessageSquare, ChevronLeft, MoreVertical,
+  Heart, MessageSquare, ChevronLeft, MoreVertical, LogOut, Settings,
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { ru } from 'date-fns/locale';
@@ -33,7 +33,7 @@ interface ProfileData {
 
 export default function ProfilePage() {
   const { userId } = useParams<{ userId: string }>();
-  const { user, updateProfile } = useAuthStore();
+  const { user, updateProfile, logout } = useAuthStore();
   const { createPrivateChat, setActiveChat } = useChatStore();
   const navigate = useNavigate();
 
@@ -118,6 +118,11 @@ export default function ProfilePage() {
 
   const fmtDate = (d: string) =>
     formatDistanceToNow(new Date(d), { addSuffix: true, locale: ru });
+
+  const handleLogout = async () => {
+    await logout();
+    navigate('/login');
+  };
 
   // ── OTHER USER PROFILE ──
   if (!isOwn) {
@@ -237,15 +242,25 @@ export default function ProfilePage() {
 
   // ── OWN PROFILE ──
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="max-w-lg mx-auto px-4 py-8">
-        <h2 className="text-2xl font-bold text-white mb-6">Мой профиль</h2>
+    <div className="h-full overflow-y-auto no-overscroll safe-bottom">
+      <div className="sticky top-0 z-10 bg-dark-950/95 backdrop-blur-sm border-b border-dark-800/30 px-4 sm:px-6 py-3 safe-top">
+        <div className="max-w-2xl mx-auto flex items-center justify-between gap-3">
+          <h2 className="text-xl font-bold text-white">Мой профиль</h2>
+          <button
+            onClick={() => navigate('/settings')}
+            className="btn-ghost px-3 py-2 rounded-xl flex items-center gap-2 text-sm"
+          >
+            <Settings className="w-4 h-4" />
+            Настройки
+          </button>
+        </div>
+      </div>
 
-        <div className="glass rounded-2xl p-6 mb-4">
-          {/* Avatar */}
-          <div className="flex justify-center mb-6">
-            <div className="relative group">
-              <div className="w-24 h-24 rounded-full bg-primary-600/30 flex items-center justify-center text-2xl font-bold text-primary-300 overflow-hidden">
+      <div className="max-w-2xl mx-auto px-4 sm:px-6 py-6 md:py-8 space-y-4 pb-[calc(6rem+env(safe-area-inset-bottom))] md:pb-10">
+        <div className="glass rounded-3xl p-6">
+          <div className="flex flex-col sm:flex-row items-center sm:items-start gap-5 mb-5">
+            <div className="relative group shrink-0">
+              <div className="w-24 h-24 rounded-full bg-primary-600/30 flex items-center justify-center text-2xl font-bold text-primary-300 overflow-hidden ring-4 ring-primary-500/20">
                 {user?.avatar
                   ? <img src={user.avatar} className="w-full h-full object-cover" alt="" />
                   : getInitials(user?.displayName || '?')}
@@ -255,6 +270,24 @@ export default function ProfilePage() {
                 <input type="file" className="hidden" accept="image/*" onChange={handleAvatarUpload} />
               </label>
             </div>
+
+            <div className="flex-1 min-w-0 text-center sm:text-left">
+              <h3 className="text-2xl font-bold text-white truncate">{user?.displayName}</h3>
+              <p className="text-sm text-dark-400 mt-1">{user?.phone}</p>
+              {user && (
+                <p className="text-xs text-dark-500 mt-2">
+                  Участник с {new Date(user.createdAt).toLocaleDateString('ru', { month: 'long', year: 'numeric' })}
+                </p>
+              )}
+            </div>
+
+            <button
+              onClick={handleLogout}
+              className="w-full sm:w-auto bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-300 px-4 py-2.5 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-colors"
+            >
+              <LogOut className="w-4 h-4" />
+              Выйти
+            </button>
           </div>
 
           <div className="mb-4">
@@ -290,17 +323,9 @@ export default function ProfilePage() {
             className="btn-primary w-full flex items-center justify-center gap-2"
           >
             {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-            {saved ? 'Сохранено!' : saving ? 'Сохранение...' : 'Сохранить'}
+            {saved ? 'Сохранено!' : saving ? 'Сохранение...' : 'Сохранить изменения'}
           </button>
         </div>
-
-        {user && (
-          <div className="glass rounded-2xl p-4 text-center">
-            <p className="text-xs text-dark-400">
-              Участник с {new Date(user.createdAt).toLocaleDateString('ru', { month: 'long', year: 'numeric' })}
-            </p>
-          </div>
-        )}
       </div>
     </div>
   );

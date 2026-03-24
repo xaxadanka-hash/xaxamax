@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect } from 'react';
 import { useThemeStore } from '../../store/themeStore';
 import { useAuthStore } from '../../store/authStore';
+import { usePreferencesStore } from '../../store/preferencesStore';
 import { useNavigate } from 'react-router-dom';
 import api from '../../services/api';
 import {
-  Camera, LogOut, ChevronRight, Bell, Lock, Palette,
-  Phone, Info, Trash2, Check, Moon, Sun,
+  Camera, LogOut, ChevronRight, Bell,
+  Phone, Info, Check, Moon, Sun, PanelLeft, MessageSquare, Rows3,
 } from 'lucide-react';
 
 export default function SettingsPage() {
@@ -20,6 +21,14 @@ export default function SettingsPage() {
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [pushEnabled, setPushEnabled] = useState(false);
   const { theme, toggle: toggleTheme } = useThemeStore();
+  const {
+    showStories,
+    showMessagePreview,
+    compactSidebar,
+    setShowStories,
+    setShowMessagePreview,
+    setCompactSidebar,
+  } = usePreferencesStore();
   const [pushLoading, setPushLoading] = useState(false);
 
   useEffect(() => {
@@ -106,6 +115,11 @@ export default function SettingsPage() {
     }
   };
 
+  const handleLogout = async () => {
+    await logout();
+    navigate('/login');
+  };
+
   const Section = ({ title, children }: { title: string; children: React.ReactNode }) => (
     <div className="mb-6">
       <p className="text-xs font-medium text-dark-500 uppercase tracking-wider px-4 mb-2">{title}</p>
@@ -141,6 +155,39 @@ export default function SettingsPage() {
       <span className="flex-1 text-sm text-left">{label}</span>
       {value && <span className="text-xs text-dark-500">{value}</span>}
       {onClick && !danger && <ChevronRight className="w-4 h-4 text-dark-600" />}
+    </button>
+  );
+
+  const ToggleRow = ({
+    icon: Icon,
+    label,
+    hint,
+    enabled,
+    onToggle,
+    disabled,
+  }: {
+    icon: React.ElementType;
+    label: string;
+    hint?: string;
+    enabled: boolean;
+    onToggle: () => void;
+    disabled?: boolean;
+  }) => (
+    <button
+      onClick={onToggle}
+      disabled={disabled}
+      className="flex items-center gap-3 w-full px-4 py-3.5 border-b border-dark-800/30 last:border-0 hover:bg-dark-800/40 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+    >
+      <div className="w-8 h-8 rounded-lg bg-dark-700/60 flex items-center justify-center shrink-0">
+        <Icon className="w-4 h-4" />
+      </div>
+      <div className="flex-1 min-w-0 text-left">
+        <p className="text-sm text-dark-100">{label}</p>
+        {hint && <p className="text-xs text-dark-500 mt-0.5">{hint}</p>}
+      </div>
+      <div className={`relative w-11 h-6 rounded-full transition-colors ${enabled ? 'bg-primary-600' : 'bg-dark-600'}`}>
+        <div className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+      </div>
     </button>
   );
 
@@ -209,57 +256,53 @@ export default function SettingsPage() {
           </div>
         </Section>
 
-        {/* App settings */}
-        <Section title="Приложение">
-          <button
-            onClick={handleTogglePush}
+        <Section title="Интерфейс">
+          <ToggleRow
+            icon={theme === 'dark' ? Moon : Sun}
+            label="Светлая тема"
+            hint={theme === 'dark' ? 'Сейчас включена тёмная тема' : 'Сейчас включена светлая тема'}
+            enabled={theme === 'light'}
+            onToggle={toggleTheme}
+          />
+          <ToggleRow
+            icon={Rows3}
+            label="Показывать сторис"
+            hint="Лента сторис в левом сайдбаре"
+            enabled={showStories}
+            onToggle={() => setShowStories(!showStories)}
+          />
+          <ToggleRow
+            icon={MessageSquare}
+            label="Предпросмотр сообщений"
+            hint="Текст последнего сообщения в списке чатов"
+            enabled={showMessagePreview}
+            onToggle={() => setShowMessagePreview(!showMessagePreview)}
+          />
+          <ToggleRow
+            icon={PanelLeft}
+            label="Компактный список чатов"
+            hint="Меньше высота элементов в сайдбаре"
+            enabled={compactSidebar}
+            onToggle={() => setCompactSidebar(!compactSidebar)}
+          />
+        </Section>
+
+        <Section title="Уведомления">
+          <ToggleRow
+            icon={Bell}
+            label="Push-уведомления"
+            hint="Уведомления о сообщениях и событиях"
+            enabled={pushEnabled}
+            onToggle={handleTogglePush}
             disabled={pushLoading || !('PushManager' in window)}
-            className="flex items-center gap-3 w-full px-4 py-3.5 border-b border-dark-800/30 hover:bg-dark-800/40 transition-colors"
-          >
-            <div className="w-8 h-8 rounded-lg bg-dark-700/60 flex items-center justify-center shrink-0">
-              <Bell className="w-4 h-4" />
-            </div>
-            <span className="flex-1 text-sm text-left text-dark-100">Уведомления</span>
-            <div className={`relative w-11 h-6 rounded-full transition-colors ${pushEnabled ? 'bg-primary-600' : 'bg-dark-600'}`}>
-              <div className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${pushEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
-            </div>
-          </button>
-          <Row icon={Lock} label="Конфиденциальность" onClick={() => {}} />
-          <button
-            onClick={toggleTheme}
-            className="flex items-center gap-3 w-full px-4 py-3.5 border-b border-dark-800/30 hover:bg-dark-800/40 transition-colors"
-          >
-            <div className="w-8 h-8 rounded-lg bg-dark-700/60 flex items-center justify-center shrink-0">
-              {theme === 'dark' ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
-            </div>
-            <span className="flex-1 text-sm text-left text-dark-100">Оформление</span>
-            <span className="text-xs text-dark-400">{theme === 'dark' ? 'Тёмная' : 'Светлая'}</span>
-            <div className={`relative w-11 h-6 rounded-full transition-colors ml-2 ${theme === 'light' ? 'bg-primary-600' : 'bg-dark-600'}`}>
-              <div className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${theme === 'light' ? 'translate-x-6' : 'translate-x-1'}`} />
-            </div>
-          </button>
-          <Row icon={Phone} label="Телефон" value={(user as any)?.phone || '—'} />
+          />
         </Section>
 
-        {/* Info */}
-        <Section title="О приложении">
-          <Row icon={Info} label="Версия" value="1.0.0" />
-        </Section>
-
-        {/* Danger zone */}
         <Section title="Аккаунт">
-          <Row
-            icon={LogOut}
-            label="Выйти"
-            onClick={logout}
-            danger
-          />
-          <Row
-            icon={Trash2}
-            label="Удалить аккаунт"
-            onClick={() => {}}
-            danger
-          />
+          <Row icon={Phone} label="Телефон" value={(user as any)?.phone || '—'} />
+          <Row icon={Info} label="Версия" value="1.0.0" />
+          <Row icon={Info} label="Открыть профиль" onClick={() => navigate('/profile')} />
+          <Row icon={LogOut} label="Выйти" onClick={handleLogout} danger />
         </Section>
       </div>
     </div>

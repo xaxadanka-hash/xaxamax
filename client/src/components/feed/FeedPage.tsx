@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../store/authStore';
+import { useChatStore } from '../../store/chatStore';
 import api from '../../services/api';
 import { formatDistanceToNow } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import {
-  Heart, MessageCircle, Share2, Send, Image, Mic, MoreHorizontal,
-  Trash2, X, Play, Pause,
+  ArrowLeft, Heart, MessageCircle, Share2, Send, Image, Mic, Trash2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { VoicePlayer } from '../chat/VoiceMessage';
@@ -37,6 +37,7 @@ interface Comment {
 
 export default function FeedPage() {
   const { user } = useAuthStore();
+  const { setActiveChat } = useChatStore();
   const navigate = useNavigate();
   const [posts, setPosts] = useState<Post[]>([]);
   const [newPostText, setNewPostText] = useState('');
@@ -190,6 +191,11 @@ export default function FeedPage() {
     catch { return ''; }
   };
 
+  const handleBackToChats = () => {
+    setActiveChat(null);
+    navigate('/');
+  };
+
   if (loading) {
     return (
       <div className="h-full flex items-center justify-center">
@@ -203,7 +209,19 @@ export default function FeedPage() {
       <div className="max-w-3xl xl:max-w-[56rem] mx-auto px-4 sm:px-6 py-4 md:py-6 pb-[calc(5.5rem+env(safe-area-inset-bottom))] md:pb-8">
         {/* Header */}
         <div className="sticky top-0 z-10 bg-dark-950/95 backdrop-blur-sm border-b border-dark-800/30 -mx-4 sm:-mx-6 px-4 sm:px-6 pb-3 mb-4 md:mb-6 safe-top">
-          <h2 className="text-2xl font-bold text-white">Лента</h2>
+          <div className="flex items-center justify-between gap-3 pt-1.5">
+            <button
+              onClick={handleBackToChats}
+              className="btn-ghost px-2.5 py-2 rounded-xl flex items-center gap-1.5 text-sm"
+              title="Вернуться к чатам"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              Чаты
+            </button>
+
+            <h2 className="text-2xl font-bold text-white">Стена</h2>
+            <div className="w-[70px]" />
+          </div>
         </div>
 
         {/* New post */}

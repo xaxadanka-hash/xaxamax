@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { MessageCircle, Newspaper, User, Settings, Hash, Users } from 'lucide-react';
+import { MessageCircle, Newspaper, User, Settings, Users } from 'lucide-react';
 import Sidebar from './Sidebar';
 import ChatView from '../chat/ChatView';
 import FeedPage from '../feed/FeedPage';
@@ -15,7 +15,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 const NAV_ITEMS = [
   { path: '/', label: 'Чаты', icon: MessageCircle },
   { path: '/contacts', label: 'Контакты', icon: Users },
-  { path: '/feed', label: 'Лента', icon: Newspaper },
+  { path: '/feed', label: 'Стена', icon: Newspaper },
   { path: '/profile', label: 'Профиль', icon: User },
   { path: '/settings', label: 'Настройки', icon: Settings },
 ];
@@ -46,7 +46,7 @@ export default function MainLayout() {
 
   const isChatsRoute = location.pathname === '/';
   const showChat = isChatsRoute && !!activeChat && (!isMobile || !showSidebar);
-  const showMainSidebar = isChatsRoute && (!isMobile || showSidebar);
+  const showMainSidebar = !isMobile || (isChatsRoute && showSidebar);
 
   return (
     <div className="h-full min-h-dvh flex flex-col bg-dark-950 overflow-hidden no-overscroll">
