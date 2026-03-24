@@ -8,6 +8,7 @@ import {
   MessageCircle, Search, Settings, LogOut, Users, User, Newspaper, Pencil,
 } from 'lucide-react';
 import CreateGroupModal from './CreateGroupModal';
+import StoryStrip from '../stories/StoryStrip';
 import api from '../../services/api';
 
 interface SidebarProps {
@@ -105,6 +106,9 @@ export default function Sidebar({ onChatSelect }: SidebarProps) {
           </button>
         </div>
       )}
+
+      {/* Stories strip */}
+      <StoryStrip />
 
       {/* Search */}
       <div className="px-3 py-2">

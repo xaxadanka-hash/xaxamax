@@ -37,6 +37,8 @@ model User {
   channelReactions   ChannelPostReaction[]
   messageReactions   MessageReaction[]
   pushSubscriptions  PushSubscription[]
+  stories            Story[]
+  storyViews         StoryViewer[]
 }
 
 model Contact {
@@ -343,6 +345,34 @@ model CallParticipant {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([callId, userId])
+}
+
+// === STORIES ===
+
+model Story {
+  id        String    @id @default(uuid())
+  authorId  String
+  mediaUrl  String
+  mimeType  String    @default("image/jpeg")
+  text      String?
+  duration  Int       @default(5)
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+
+  author  User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  viewers StoryViewer[]
+}
+
+model StoryViewer {
+  id       String   @id @default(uuid())
+  storyId  String
+  userId   String
+  viewedAt DateTime @default(now())
+
+  story Story @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([storyId, userId])
 }
 
 // === PUSH SUBSCRIPTIONS ===

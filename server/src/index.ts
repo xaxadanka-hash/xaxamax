@@ -16,6 +16,7 @@ import postRoutes from './routes/posts';
 import mediaRoutes from './routes/media';
 import channelRoutes from './routes/channels';
 import pushRoutes from './routes/push';
+import storyRoutes from './routes/stories';
 import { setupSocketHandlers } from './socket';
 import { authMiddleware } from './middleware/auth';
 
@@ -58,6 +59,7 @@ app.use('/api/posts', authMiddleware, postRoutes);
 app.use('/api/media', authMiddleware, mediaRoutes);
 app.use('/api/channels', authMiddleware, channelRoutes);
 app.use('/api/push', authMiddleware, pushRoutes);
+app.use('/api/stories', authMiddleware, storyRoutes);
 
 // Health check
 app.get('/api/health', (_req, res) => {
