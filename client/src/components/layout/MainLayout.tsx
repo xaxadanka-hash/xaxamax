@@ -1,16 +1,27 @@
 import { useState, useEffect } from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
+import { MessageCircle, Newspaper, User, Settings } from 'lucide-react';
 import Sidebar from './Sidebar';
 import ChatView from '../chat/ChatView';
 import FeedPage from '../feed/FeedPage';
 import ProfilePage from '../profile/ProfilePage';
+import SettingsPage from '../settings/SettingsPage';
 import { useChatStore } from '../../store/chatStore';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
+
+const NAV_ITEMS = [
+  { path: '/', label: 'Чаты', icon: MessageCircle },
+  { path: '/feed', label: 'Лента', icon: Newspaper },
+  { path: '/profile', label: 'Профиль', icon: User },
+  { path: '/settings', label: 'Настройки', icon: Settings },
+];
 
 export default function MainLayout() {
   const [showSidebar, setShowSidebar] = useState(true);
   const { activeChat } = useChatStore();
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const navigate = useNavigate();
+  const location = useLocation();
 
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth < 768);
@@ -22,48 +33,98 @@ export default function MainLayout() {
     if (isMobile && activeChat) setShowSidebar(false);
   }, [activeChat, isMobile]);
 
-  return (
-    <div className="h-full flex bg-dark-950 overflow-hidden safe-top safe-bottom">
-      {/* Sidebar */}
-      {(!isMobile || showSidebar) && (
-        <motion.div
-          initial={isMobile ? { x: -320 } : false}
-          animate={{ x: 0 }}
-          exit={{ x: -320 }}
-          className={`${isMobile ? 'absolute inset-0 z-30' : 'relative'} w-full md:w-80 lg:w-96 flex-shrink-0`}
-        >
-          <Sidebar onChatSelect={() => isMobile && setShowSidebar(false)} />
-        </motion.div>
-      )}
+  // On mobile: show sidebar when navigating to '/'
+  useEffect(() => {
+    if (isMobile && location.pathname === '/' && !activeChat) {
+      setShowSidebar(true);
+    }
+  }, [location.pathname, isMobile, activeChat]);
 
-      {/* Main content */}
-      <div className="flex-1 flex flex-col min-w-0">
-        <Routes>
-          <Route path="/feed" element={<FeedPage />} />
-          <Route path="/profile" element={<ProfilePage />} />
-          <Route path="/profile/:userId" element={<ProfilePage />} />
-          <Route
-            path="*"
-            element={
-              activeChat ? (
-                <ChatView onBack={() => { setShowSidebar(true); useChatStore.getState().setActiveChat(null); }} />
-              ) : (
-                <div className="h-full flex items-center justify-center">
-                  <div className="text-center">
-                    <div className="w-24 h-24 bg-dark-800/50 rounded-full flex items-center justify-center mx-auto mb-4">
-                      <svg className="w-12 h-12 text-dark-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                      </svg>
+  const isChatsRoute = location.pathname === '/';
+  const showChat = isChatsRoute && !!activeChat && (!isMobile || !showSidebar);
+  const showMainSidebar = isChatsRoute && (!isMobile || showSidebar);
+
+  return (
+    <div className="h-full flex flex-col bg-dark-950 overflow-hidden">
+      {/* ── TOP AREA (desktop: sidebar+content, mobile: full screen panels) ── */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+
+        {/* Sidebar (chat list) */}
+        <AnimatePresence>
+          {showMainSidebar && (
+            <motion.div
+              key="sidebar"
+              initial={isMobile ? { x: -320 } : false}
+              animate={{ x: 0 }}
+              exit={{ x: -320 }}
+              transition={{ type: 'spring', damping: 28, stiffness: 260 }}
+              className={`${isMobile ? 'absolute inset-0 z-30' : 'relative'} w-full md:w-80 lg:w-96 flex-shrink-0 ${isMobile ? 'pb-nav' : ''}`}
+            >
+              <Sidebar onChatSelect={() => isMobile && setShowSidebar(false)} />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Main panel */}
+        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+          <Routes>
+            <Route path="/feed" element={<FeedPage />} />
+            <Route path="/profile" element={<ProfilePage />} />
+            <Route path="/profile/:userId" element={<ProfilePage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route
+              path="*"
+              element={
+                showChat ? (
+                  <ChatView
+                    onBack={() => {
+                      setShowSidebar(true);
+                      useChatStore.getState().setActiveChat(null);
+                    }}
+                  />
+                ) : !isMobile ? (
+                  /* Desktop: empty state when no chat selected */
+                  <div className="h-full flex items-center justify-center">
+                    <div className="text-center select-none">
+                      <div className="w-24 h-24 bg-dark-800/50 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <MessageCircle className="w-12 h-12 text-dark-600" />
+                      </div>
+                      <h3 className="text-dark-400 text-lg font-medium">Выберите чат</h3>
+                      <p className="text-dark-600 text-sm mt-1">или начните новый разговор</p>
                     </div>
-                    <h3 className="text-dark-400 text-lg font-medium">Выберите чат</h3>
-                    <p className="text-dark-600 text-sm mt-1">или начните новый разговор</p>
                   </div>
-                </div>
-              )
-            }
-          />
-        </Routes>
+                ) : null
+              }
+            />
+          </Routes>
+        </div>
       </div>
+
+      {/* ── BOTTOM NAVIGATION (mobile only) ── */}
+      {isMobile && !activeChat && (
+        <div
+          className="fixed bottom-0 left-0 right-0 z-40 flex items-stretch
+                     bg-dark-900/95 backdrop-blur-xl border-t border-dark-800/60"
+          style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+        >
+          {NAV_ITEMS.map(({ path, label, icon: Icon }) => {
+            const isActive = path === '/'
+              ? location.pathname === '/'
+              : location.pathname.startsWith(path);
+            return (
+              <button
+                key={path}
+                onClick={() => { navigate(path); setShowSidebar(true); }}
+                className={`flex-1 flex flex-col items-center justify-center py-2 gap-0.5 transition-colors
+                  ${isActive ? 'text-primary-400' : 'text-dark-500 hover:text-dark-300'}`}
+              >
+                <Icon className="w-5 h-5" />
+                <span className="text-[10px] font-medium">{label}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

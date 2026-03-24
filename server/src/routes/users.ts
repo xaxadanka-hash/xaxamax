@@ -32,7 +32,26 @@ router.get('/search', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// Update profile (must be before /:id)
+// Update profile — both PUT /me and PATCH /profile (must be before /:id)
+router.patch('/profile', async (req: AuthRequest, res: Response) => {
+  try {
+    const { displayName, bio, avatar } = req.body;
+    const user = await prisma.user.update({
+      where: { id: req.userId },
+      data: {
+        ...(displayName && { displayName }),
+        ...(bio !== undefined && { bio }),
+        ...(avatar !== undefined && { avatar }),
+      },
+      select: { id: true, phone: true, displayName: true, avatar: true, bio: true },
+    });
+    res.json(user);
+  } catch (err) {
+    console.error('Patch profile error:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
 router.put('/me', async (req: AuthRequest, res: Response) => {
   try {
     const { displayName, bio, avatar } = req.body;

@@ -5,9 +5,9 @@ import { useAuthStore } from '../../store/authStore';
 import { formatDistanceToNow } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import {
-  MessageCircle, Search, Plus, Settings, LogOut, Newspaper, User,
-  Phone, Video, Users,
+  MessageCircle, Search, Settings, LogOut, Users, User, Newspaper, Pencil,
 } from 'lucide-react';
+import CreateGroupModal from './CreateGroupModal';
 import api from '../../services/api';
 
 interface SidebarProps {
@@ -20,6 +20,7 @@ export default function Sidebar({ onChatSelect }: SidebarProps) {
   const [search, setSearch] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [showMenu, setShowMenu] = useState(false);
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -74,6 +75,13 @@ export default function Sidebar({ onChatSelect }: SidebarProps) {
           xaxamax
         </h1>
         <div className="flex items-center gap-1">
+          <button
+            onClick={() => setShowCreateGroup(true)}
+            className="btn-ghost p-2 rounded-xl"
+            title="Новая беседа"
+          >
+            <Pencil className="w-5 h-5" />
+          </button>
           <button onClick={() => setShowMenu(!showMenu)} className="btn-ghost p-2 rounded-xl">
             <Settings className="w-5 h-5" />
           </button>
@@ -110,37 +118,6 @@ export default function Sidebar({ onChatSelect }: SidebarProps) {
             className="w-full bg-dark-800/40 border-none rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder:text-dark-500 focus:outline-none focus:ring-1 focus:ring-primary-500/30"
           />
         </div>
-      </div>
-
-      {/* Navigation tabs */}
-      <div className="flex px-3 gap-1 mb-1">
-        <button
-          onClick={() => navigate('/')}
-          className={`flex-1 py-2 text-xs font-medium rounded-lg transition-colors ${
-            location.pathname === '/' ? 'bg-primary-600/20 text-primary-400' : 'text-dark-400 hover:bg-dark-800/40'
-          }`}
-        >
-          <MessageCircle className="w-4 h-4 mx-auto mb-0.5" />
-          Чаты
-        </button>
-        <button
-          onClick={() => navigate('/feed')}
-          className={`flex-1 py-2 text-xs font-medium rounded-lg transition-colors ${
-            location.pathname === '/feed' ? 'bg-primary-600/20 text-primary-400' : 'text-dark-400 hover:bg-dark-800/40'
-          }`}
-        >
-          <Newspaper className="w-4 h-4 mx-auto mb-0.5" />
-          Лента
-        </button>
-        <button
-          onClick={() => navigate('/profile')}
-          className={`flex-1 py-2 text-xs font-medium rounded-lg transition-colors ${
-            location.pathname === '/profile' ? 'bg-primary-600/20 text-primary-400' : 'text-dark-400 hover:bg-dark-800/40'
-          }`}
-        >
-          <User className="w-4 h-4 mx-auto mb-0.5" />
-          Профиль
-        </button>
       </div>
 
       {/* Search results */}
@@ -208,6 +185,10 @@ export default function Sidebar({ onChatSelect }: SidebarProps) {
           </button>
         ))}
       </div>
+      {/* Create group modal */}
+      {showCreateGroup && (
+        <CreateGroupModal onClose={() => setShowCreateGroup(false)} />
+      )}
     </div>
   );
 }
