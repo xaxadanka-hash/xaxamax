@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useAuthStore } from '../../store/authStore';
 import { useNavigate } from 'react-router-dom';
 import api from '../../services/api';
@@ -17,6 +17,54 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [pushEnabled, setPushEnabled] = useState(false);
+  const [pushLoading, setPushLoading] = useState(false);
+
+  useEffect(() => {
+    if ('Notification' in window) {
+      setPushEnabled(Notification.permission === 'granted');
+    }
+  }, []);
+
+  const handleTogglePush = async () => {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    setPushLoading(true);
+    try {
+      if (pushEnabled) {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) {
+          await api.post('/push/unsubscribe', { endpoint: sub.endpoint });
+          await sub.unsubscribe();
+        }
+        setPushEnabled(false);
+      } else {
+        const perm = await Notification.requestPermission();
+        if (perm !== 'granted') return;
+        const { data } = await api.get('/push/vapid-public-key');
+        if (!data.key) return;
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(data.key),
+        });
+        const json = sub.toJSON();
+        await api.post('/push/subscribe', { endpoint: json.endpoint, keys: json.keys });
+        setPushEnabled(true);
+      }
+    } catch (err) {
+      console.error('Push toggle error:', err);
+    } finally {
+      setPushLoading(false);
+    }
+  };
+
+  function urlBase64ToUint8Array(base64String: string) {
+    const padding = '='.repeat((4 - base64String.length % 4) % 4);
+    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = window.atob(base64);
+    return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+  }
 
   const getInitials = (name: string) =>
     name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
@@ -161,7 +209,19 @@ export default function SettingsPage() {
 
         {/* App settings */}
         <Section title="Приложение">
-          <Row icon={Bell} label="Уведомления" value="Включены" onClick={() => {}} />
+          <button
+            onClick={handleTogglePush}
+            disabled={pushLoading || !('PushManager' in window)}
+            className="flex items-center gap-3 w-full px-4 py-3.5 border-b border-dark-800/30 hover:bg-dark-800/40 transition-colors"
+          >
+            <div className="w-8 h-8 rounded-lg bg-dark-700/60 flex items-center justify-center shrink-0">
+              <Bell className="w-4 h-4" />
+            </div>
+            <span className="flex-1 text-sm text-left text-dark-100">Уведомления</span>
+            <div className={`relative w-11 h-6 rounded-full transition-colors ${pushEnabled ? 'bg-primary-600' : 'bg-dark-600'}`}>
+              <div className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${pushEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+            </div>
+          </button>
           <Row icon={Lock} label="Конфиденциальность" onClick={() => {}} />
           <Row icon={Palette} label="Оформление" value="Тёмная" onClick={() => {}} />
           <Row icon={Phone} label="Телефон" value={(user as any)?.phone || '—'} />

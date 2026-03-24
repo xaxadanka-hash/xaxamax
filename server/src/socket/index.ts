@@ -1,6 +1,7 @@
 import { Server, Socket } from 'socket.io';
 import jwt from 'jsonwebtoken';
 import { PrismaClient } from '@prisma/client';
+import { sendPushToUser } from '../routes/push';
 
 const prisma = new PrismaClient();
 
@@ -129,6 +130,22 @@ export function setupSocketHandlers(io: Server) {
 
         // Send delivery status
         socket.emit('message:status', { messageId: message.id, status: 'DELIVERED' });
+
+        // Push notifications to offline members
+        const members = await prisma.chatMember.findMany({ where: { chatId: data.chatId, userId: { not: userId } } });
+        const offlineMembers = members.filter(m => !onlineUsers.has(m.userId) || onlineUsers.get(m.userId)!.size === 0);
+        const sender = await prisma.user.findUnique({ where: { id: userId }, select: { displayName: true } });
+        const pushBody = message.text ? message.text.slice(0, 100) : '📎 Медиафайл';
+        await Promise.allSettled(
+          offlineMembers.map(m =>
+            sendPushToUser(m.userId, {
+              title: sender?.displayName || 'xaxamax',
+              body: pushBody,
+              tag: `msg-${data.chatId}`,
+              url: '/',
+            })
+          )
+        );
       } catch (err) {
         console.error('Send message error:', err);
         socket.emit('error', { message: 'Ошибка отправки сообщения' });
