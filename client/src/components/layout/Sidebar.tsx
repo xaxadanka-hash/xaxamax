@@ -5,7 +5,7 @@ import { useAuthStore } from '../../store/authStore';
 import { formatDistanceToNow } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import {
-  MessageCircle, Search, Settings, LogOut, Users, User, Newspaper, Pencil,
+  MessageCircle, Search, Settings, LogOut, Users, User, Newspaper, Pencil, Shield,
 } from 'lucide-react';
 import CreateGroupModal from './CreateGroupModal';
 import StoryStrip from '../stories/StoryStrip';
@@ -100,6 +100,12 @@ export default function Sidebar({ onChatSelect }: SidebarProps) {
             className="sidebar-item w-full text-left">
             <Newspaper className="w-4 h-4" /> Лента
           </button>
+          {(user as any)?.isAdmin && (
+            <button onClick={() => { navigate('/admin'); setShowMenu(false); }}
+              className="sidebar-item w-full text-left text-primary-400">
+              <Shield className="w-4 h-4" /> Администрирование
+            </button>
+          )}
           <hr className="border-dark-700/50 my-1" />
           <button onClick={logout} className="sidebar-item w-full text-left text-red-400 hover:text-red-300">
             <LogOut className="w-4 h-4" /> Выйти

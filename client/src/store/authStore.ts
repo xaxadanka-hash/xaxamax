@@ -7,8 +7,10 @@ export interface User {
   phone: string;
   displayName: string;
   avatar: string | null;
-  bio: string | null;
+  bio?: string;
   isOnline: boolean;
+  isAdmin: boolean;
+  isBanned: boolean;
   lastSeen: string;
   createdAt: string;
 }
