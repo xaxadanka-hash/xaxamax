@@ -347,6 +347,24 @@ export function setupSocketHandlers(io: Server) {
       }
     });
 
+    // === MESSAGE REACTIONS ===
+    socket.on('message:react', async (data: { messageId: string; chatId: string; emoji: string }) => {
+      try {
+        const existing = await prisma.messageReaction.findUnique({
+          where: { messageId_userId_emoji: { messageId: data.messageId, userId, emoji: data.emoji } },
+        });
+        if (existing) {
+          await prisma.messageReaction.delete({ where: { id: existing.id } });
+          io.to(`chat:${data.chatId}`).emit('message:reaction', { messageId: data.messageId, chatId: data.chatId, userId, emoji: data.emoji, reacted: false });
+        } else {
+          await prisma.messageReaction.create({ data: { messageId: data.messageId, userId, emoji: data.emoji } });
+          io.to(`chat:${data.chatId}`).emit('message:reaction', { messageId: data.messageId, chatId: data.chatId, userId, emoji: data.emoji, reacted: true });
+        }
+      } catch (err) {
+        console.error('message:react error:', err);
+      }
+    });
+
     // === CHANNEL NOTIFICATIONS ===
     // Join channel rooms for subscribed channels on connect
     (async () => {

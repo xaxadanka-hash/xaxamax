@@ -35,7 +35,7 @@ interface ForwardState {
 export default function ChatView({ onBack }: ChatViewProps) {
   const {
     activeChat, messages, isLoadingMessages,
-    sendMessage, editMessage, deleteMessage, pinMessage,
+    sendMessage, editMessage, deleteMessage, pinMessage, reactMessage,
   } = useChatStore();
   const { user } = useAuthStore();
 
@@ -46,6 +46,9 @@ export default function ChatView({ onBack }: ChatViewProps) {
   const [editState, setEditState] = useState<EditState | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [forwardState, setForwardState] = useState<ForwardState | null>(null);
+  const [reactionPicker, setReactionPicker] = useState<string | null>(null);
+
+  const REACTION_EMOJIS = ['👍', '❤️', '🔥', '😂', '😮', '👎'];
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -351,6 +354,29 @@ export default function ChatView({ onBack }: ChatViewProps) {
                   <p className="text-sm whitespace-pre-wrap break-words">{msg.text}</p>
                 )}
 
+                {/* Reactions display */}
+                {msg.reactions && msg.reactions.length > 0 && (() => {
+                  const map = new Map<string, number>();
+                  msg.reactions.forEach(r => map.set(r.emoji, (map.get(r.emoji) || 0) + 1));
+                  return (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {Array.from(map.entries()).map(([emoji, count]) => {
+                        const mine = msg.reactions!.some(r => r.userId === user?.id && r.emoji === emoji);
+                        return (
+                          <button
+                            key={emoji}
+                            onClick={() => reactMessage(msg.id, activeChat!.id, emoji)}
+                            className={`flex items-center gap-0.5 text-xs px-1.5 py-0.5 rounded-full transition-colors
+                              ${mine ? 'bg-primary-600/30 text-primary-200' : 'bg-white/10 text-white/70 hover:bg-white/20'}`}
+                          >
+                            {emoji} {count}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+
                 {/* Footer: time + edited + status */}
                 <div className={`flex items-center gap-1 mt-0.5 ${isMine ? 'justify-end' : 'justify-start'}`}>
                   {msg.editedAt && (
@@ -364,13 +390,31 @@ export default function ChatView({ onBack }: ChatViewProps) {
                 </div>
               </div>
 
-              {/* Quick reply button on hover */}
-              <button
-                onClick={() => setReplyTo(msg)}
-                className="self-center ml-1 opacity-0 group-hover:opacity-100 transition-opacity p-1 text-dark-500 hover:text-primary-400"
-              >
-                <ReplyIcon className="w-4 h-4" />
-              </button>
+              {/* Quick action buttons on hover */}
+              <div className="self-center flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                {/* Quick react */}
+                <div className="relative">
+                  <button
+                    onClick={() => setReactionPicker(reactionPicker === msg.id ? null : msg.id)}
+                    className="p-1 text-dark-500 hover:text-yellow-400"
+                  >
+                    <span className="text-sm">😊</span>
+                  </button>
+                  {reactionPicker === msg.id && (
+                    <div className={`absolute bottom-full ${isMine ? 'right-0' : 'left-0'} mb-1 flex gap-1 bg-dark-800 border border-dark-700 rounded-xl px-2 py-1.5 shadow-xl z-20`}>
+                      {REACTION_EMOJIS.map(e => (
+                        <button key={e} onClick={() => { reactMessage(msg.id, activeChat!.id, e); setReactionPicker(null); }} className="text-lg hover:scale-125 transition-transform">{e}</button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={() => setReplyTo(msg)}
+                  className="p-1 text-dark-500 hover:text-primary-400"
+                >
+                  <ReplyIcon className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           );
         })}

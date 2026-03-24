@@ -27,6 +27,7 @@ router.get('/:chatId', async (req: AuthRequest, res: Response) => {
           include: { sender: { select: { id: true, displayName: true } } },
         },
         media: true,
+        reactions: true,
       },
     });
 

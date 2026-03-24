@@ -12,7 +12,7 @@ import { AnimatePresence } from 'framer-motion';
 
 function App() {
   const { isAuthenticated, isLoading, checkAuth, user } = useAuthStore();
-  const { addMessage, setTyping, applyEditedMessage, applyDeletedMessage, applyPinnedMessage } = useChatStore();
+  const { addMessage, setTyping, applyEditedMessage, applyDeletedMessage, applyPinnedMessage, applyReaction } = useChatStore();
   const { addPost } = useChannelStore();
 
   useEffect(() => {
@@ -35,6 +35,9 @@ function App() {
       applyPinnedMessage(messageId, chatId, pinned);
     });
     socket.on('channel:new_post', ({ post }) => addPost(post));
+    socket.on('message:reaction', ({ messageId, userId: uid, emoji, reacted }) => {
+      applyReaction(messageId, uid, emoji, reacted);
+    });
 
     return () => {
       socket.off('message:new');
@@ -44,8 +47,9 @@ function App() {
       socket.off('message:deleted');
       socket.off('message:pinned');
       socket.off('channel:new_post');
+      socket.off('message:reaction');
     };
-  }, [isAuthenticated, addMessage, setTyping, applyEditedMessage, applyDeletedMessage, applyPinnedMessage, addPost, user?.id]);
+  }, [isAuthenticated, addMessage, setTyping, applyEditedMessage, applyDeletedMessage, applyPinnedMessage, applyReaction, addPost, user?.id]);
 
   if (isLoading) {
     return (

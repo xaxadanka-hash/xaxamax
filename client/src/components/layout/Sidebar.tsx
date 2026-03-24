@@ -15,7 +15,7 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ onChatSelect }: SidebarProps) {
-  const { chats, fetchChats, setActiveChat, activeChat } = useChatStore();
+  const { chats, fetchChats, setActiveChat, activeChat, unreadCounts } = useChatStore();
   const { user, logout } = useAuthStore();
   const [search, setSearch] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -182,6 +182,11 @@ export default function Sidebar({ onChatSelect }: SidebarProps) {
                 </p>
               )}
             </div>
+            {(unreadCounts.get(chat.id) || 0) > 0 && (
+              <span className="shrink-0 ml-1 min-w-[20px] h-5 bg-primary-600 text-white text-[10px] font-bold rounded-full flex items-center justify-center px-1">
+                {(unreadCounts.get(chat.id) || 0) > 99 ? '99+' : unreadCounts.get(chat.id)}
+              </span>
+            )}
           </button>
         ))}
       </div>

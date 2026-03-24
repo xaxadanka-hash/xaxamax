@@ -35,6 +35,7 @@ model User {
   channelSubs        ChannelSubscriber[]
   channelPosts       ChannelPost[]        @relation("channelPostAuthor")
   channelReactions   ChannelPostReaction[]
+  messageReactions   MessageReaction[]
 }
 
 model Contact {
@@ -109,6 +110,20 @@ model Message {
   forwardedFrom Message? @relation("messageForwards", fields: [forwardedFromId], references: [id])
   forwards      Message[] @relation("messageForwards")
   media         Media[]
+  reactions     MessageReaction[]
+}
+
+model MessageReaction {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  emoji     String
+  createdAt DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
 }
 
 enum MessageType {

@@ -19,6 +19,7 @@ export interface ChatMessage {
   replyTo?: { id: string; text: string | null; sender: { id: string; displayName: string } } | null;
   forwardedFrom?: { id: string; text: string | null; sender: { id: string; displayName: string } } | null;
   media?: Array<{ id: string; url: string; filename: string; mimeType: string; size: number; duration?: number }>;
+  reactions?: Array<{ id: string; emoji: string; userId: string }>;
 }
 
 export interface Chat {
@@ -44,6 +45,8 @@ interface ChatState {
   isLoadingChats: boolean;
   isLoadingMessages: boolean;
   typingUsers: Map<string, Set<string>>;
+  unreadCounts: Map<string, number>;
+  totalUnread: number;
   fetchChats: () => Promise<void>;
   setActiveChat: (chat: Chat | null) => void;
   fetchMessages: (chatId: string) => Promise<void>;
@@ -59,6 +62,10 @@ interface ChatState {
   createGroupChat: (name: string, memberIds: string[]) => Promise<Chat>;
   setTyping: (chatId: string, userId: string, isTyping: boolean) => void;
   updateMessageStatus: (messageId: string, status: string) => void;
+  incrementUnread: (chatId: string) => void;
+  clearUnread: (chatId: string) => void;
+  reactMessage: (messageId: string, chatId: string, emoji: string) => void;
+  applyReaction: (messageId: string, userId: string, emoji: string, reacted: boolean) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -68,6 +75,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isLoadingChats: false,
   isLoadingMessages: false,
   typingUsers: new Map(),
+  unreadCounts: new Map(),
+  totalUnread: 0,
 
   fetchChats: async () => {
     set({ isLoadingChats: true });
@@ -84,6 +93,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ activeChat: chat, messages: [] });
     if (chat) {
       get().fetchMessages(chat.id);
+      get().clearUnread(chat.id);
       const socket = getSocket();
       socket?.emit('chat:join', { chatId: chat.id });
     }
@@ -109,6 +119,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const { activeChat, chats } = get();
     if (activeChat && message.chatId === activeChat.id) {
       set({ messages: [...get().messages, message] });
+    } else {
+      // Increment unread for background chats (not sent by me)
+      get().incrementUnread(message.chatId);
     }
     // Update last message in chat list
     set({
@@ -196,6 +209,38 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: get().messages.map((m) =>
         m.id === messageId ? { ...m, pinnedAt: pinned ? new Date().toISOString() : null } : m
       ),
+    });
+  },
+
+  incrementUnread: (chatId) => {
+    const counts = new Map(get().unreadCounts);
+    counts.set(chatId, (counts.get(chatId) || 0) + 1);
+    const total = Array.from(counts.values()).reduce((s, n) => s + n, 0);
+    set({ unreadCounts: counts, totalUnread: total });
+  },
+
+  clearUnread: (chatId) => {
+    const counts = new Map(get().unreadCounts);
+    counts.delete(chatId);
+    const total = Array.from(counts.values()).reduce((s, n) => s + n, 0);
+    set({ unreadCounts: counts, totalUnread: total });
+  },
+
+  reactMessage: (messageId, chatId, emoji) => {
+    const socket = getSocket();
+    socket?.emit('message:react', { messageId, chatId, emoji });
+  },
+
+  applyReaction: (messageId, userId, emoji, reacted) => {
+    set({
+      messages: get().messages.map(m => {
+        if (m.id !== messageId) return m;
+        const reactions = m.reactions || [];
+        const updated = reacted
+          ? [...reactions, { id: `${messageId}-${userId}-${emoji}`, emoji, userId }]
+          : reactions.filter(r => !(r.userId === userId && r.emoji === emoji));
+        return { ...m, reactions: updated };
+      }),
     });
   },
 }));

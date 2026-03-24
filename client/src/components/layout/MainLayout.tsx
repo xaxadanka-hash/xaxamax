@@ -20,7 +20,7 @@ const NAV_ITEMS = [
 
 export default function MainLayout() {
   const [showSidebar, setShowSidebar] = useState(true);
-  const { activeChat } = useChatStore();
+  const { activeChat, totalUnread } = useChatStore();
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
   const navigate = useNavigate();
   const location = useLocation();
@@ -121,7 +121,14 @@ export default function MainLayout() {
                 className={`flex-1 flex flex-col items-center justify-center py-2 gap-0.5 transition-colors
                   ${isActive ? 'text-primary-400' : 'text-dark-500 hover:text-dark-300'}`}
               >
-                <Icon className="w-5 h-5" />
+                <div className="relative">
+                  <Icon className="w-5 h-5" />
+                  {path === '/' && totalUnread > 0 && (
+                    <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 bg-red-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center px-0.5">
+                      {totalUnread > 99 ? '99+' : totalUnread}
+                    </span>
+                  )}
+                </div>
                 <span className="text-[10px] font-medium">{label}</span>
               </button>
             );
