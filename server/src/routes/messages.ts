@@ -40,6 +40,122 @@ router.get('/:chatId', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Edit message
+router.patch('/:id', async (req: AuthRequest, res: Response) => {
+  try {
+    const { text } = req.body;
+    const id = req.params.id as string;
+    const msg = await prisma.message.findUnique({ where: { id } });
+    if (!msg) return res.status(404).json({ error: 'Сообщение не найдено' });
+    if (msg.senderId !== req.userId) return res.status(403).json({ error: 'Нет доступа' });
+    if (!text?.trim()) return res.status(400).json({ error: 'Пустой текст' });
+
+    const updated = await prisma.message.update({
+      where: { id },
+      data: { text: text.trim(), editedAt: new Date() },
+      include: {
+        sender: { select: { id: true, displayName: true, avatar: true } },
+        replyTo: { include: { sender: { select: { id: true, displayName: true } } } },
+        media: true,
+      },
+    });
+    res.json(updated);
+  } catch (err) {
+    console.error('Edit message error:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Delete message (soft delete)
+router.delete('/:id', async (req: AuthRequest, res: Response) => {
+  try {
+    const { forAll } = req.query;
+    const id = req.params.id as string;
+    const msg = await prisma.message.findUnique({ where: { id } });
+    if (!msg) return res.status(404).json({ error: 'Сообщение не найдено' });
+    if (msg.senderId !== req.userId) return res.status(403).json({ error: 'Нет доступа' });
+
+    const deleteForAll = forAll === 'true';
+    await prisma.message.update({
+      where: { id },
+      data: {
+        deletedAt: new Date(),
+        deletedForAll: deleteForAll,
+      },
+    });
+    res.json({ success: true, messageId: id, chatId: msg.chatId, forAll: deleteForAll });
+  } catch (err) {
+    console.error('Delete message error:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Forward message to another chat
+router.post('/:id/forward', async (req: AuthRequest, res: Response) => {
+  try {
+    const { targetChatId } = req.body;
+    const original = await prisma.message.findUnique({
+      where: { id: req.params.id as string },
+      include: { media: true },
+    });
+    if (!original) return res.status(404).json({ error: 'Сообщение не найдено' });
+
+    const member = await prisma.chatMember.findFirst({
+      where: { chatId: targetChatId, userId: req.userId },
+    });
+    if (!member) return res.status(403).json({ error: 'Нет доступа к целевому чату' });
+
+    const forwarded = await prisma.message.create({
+      data: {
+        chatId: targetChatId,
+        senderId: req.userId!,
+        text: original.text,
+        type: original.type,
+        forwardedFromId: original.id,
+        ...(original.media.length && {
+          media: { connect: original.media.map((m: { id: string }) => ({ id: m.id })) },
+        }),
+      },
+      include: {
+        sender: { select: { id: true, displayName: true, avatar: true } },
+        replyTo: { include: { sender: { select: { id: true, displayName: true } } } },
+        forwardedFrom: { include: { sender: { select: { id: true, displayName: true } } } },
+        media: true,
+      },
+    });
+
+    await prisma.chat.update({ where: { id: targetChatId }, data: { updatedAt: new Date() } });
+    res.json(forwarded);
+  } catch (err) {
+    console.error('Forward message error:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Pin / unpin message
+router.patch('/:id/pin', async (req: AuthRequest, res: Response) => {
+  try {
+    const { pin } = req.body;
+    const id = req.params.id as string;
+    const msg = await prisma.message.findUnique({ where: { id } });
+    if (!msg) return res.status(404).json({ error: 'Сообщение не найдено' });
+
+    const member = await prisma.chatMember.findFirst({
+      where: { chatId: msg.chatId, userId: req.userId },
+    });
+    if (!member) return res.status(403).json({ error: 'Нет доступа' });
+
+    await prisma.message.update({
+      where: { id },
+      data: { pinnedAt: pin ? new Date() : null },
+    });
+    res.json({ success: true, messageId: req.params.id, chatId: msg.chatId, pinned: !!pin });
+  } catch (err) {
+    console.error('Pin message error:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
 // Mark messages as read
 router.post('/:chatId/read', async (req: AuthRequest, res: Response) => {
   try {

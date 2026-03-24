@@ -10,8 +10,8 @@ import CallModal from './components/call/CallModal';
 import { AnimatePresence } from 'framer-motion';
 
 function App() {
-  const { isAuthenticated, isLoading, checkAuth } = useAuthStore();
-  const { addMessage, setTyping } = useChatStore();
+  const { isAuthenticated, isLoading, checkAuth, user } = useAuthStore();
+  const { addMessage, setTyping, applyEditedMessage, applyDeletedMessage, applyPinnedMessage } = useChatStore();
 
   useEffect(() => {
     checkAuth();
@@ -22,24 +22,26 @@ function App() {
     const socket = getSocket();
     if (!socket) return;
 
-    socket.on('message:new', (message) => {
-      addMessage(message);
+    socket.on('message:new', (message) => addMessage(message));
+    socket.on('message:typing', ({ chatId, userId: uid }) => setTyping(chatId, uid, true));
+    socket.on('message:stop-typing', ({ chatId, userId: uid }) => setTyping(chatId, uid, false));
+    socket.on('message:edited', (message) => applyEditedMessage(message));
+    socket.on('message:deleted', ({ messageId, chatId, forAll }) => {
+      applyDeletedMessage(messageId, chatId, forAll, user?.id || '');
     });
-
-    socket.on('message:typing', ({ chatId, userId }) => {
-      setTyping(chatId, userId, true);
-    });
-
-    socket.on('message:stop-typing', ({ chatId, userId }) => {
-      setTyping(chatId, userId, false);
+    socket.on('message:pinned', ({ messageId, chatId, pinned }) => {
+      applyPinnedMessage(messageId, chatId, pinned);
     });
 
     return () => {
       socket.off('message:new');
       socket.off('message:typing');
       socket.off('message:stop-typing');
+      socket.off('message:edited');
+      socket.off('message:deleted');
+      socket.off('message:pinned');
     };
-  }, [isAuthenticated, addMessage, setTyping]);
+  }, [isAuthenticated, addMessage, setTyping, applyEditedMessage, applyDeletedMessage, applyPinnedMessage, user?.id]);
 
   if (isLoading) {
     return (

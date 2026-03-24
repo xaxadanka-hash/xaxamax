@@ -83,22 +83,28 @@ enum ChatMemberRole {
 }
 
 model Message {
-  id        String        @id @default(uuid())
-  chatId    String
-  senderId  String
-  text      String?
-  type      MessageType   @default(TEXT)
-  status    MessageStatus @default(SENT)
-  replyToId String?
-  createdAt DateTime      @default(now())
-  updatedAt DateTime      @updatedAt
-  deletedAt DateTime?
+  id              String        @id @default(uuid())
+  chatId          String
+  senderId        String
+  text            String?
+  type            MessageType   @default(TEXT)
+  status          MessageStatus @default(SENT)
+  replyToId       String?
+  forwardedFromId String?
+  editedAt        DateTime?
+  pinnedAt        DateTime?
+  deletedForAll   Boolean       @default(false)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  deletedAt       DateTime?
 
-  chat    Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  sender  User     @relation(fields: [senderId], references: [id], onDelete: Cascade)
-  replyTo Message? @relation("messageReplies", fields: [replyToId], references: [id])
-  replies Message[] @relation("messageReplies")
-  media   Media[]
+  chat          Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  sender        User     @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  replyTo       Message? @relation("messageReplies", fields: [replyToId], references: [id])
+  replies       Message[] @relation("messageReplies")
+  forwardedFrom Message? @relation("messageForwards", fields: [forwardedFromId], references: [id])
+  forwards      Message[] @relation("messageForwards")
+  media         Media[]
 }
 
 enum MessageType {

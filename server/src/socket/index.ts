@@ -7,8 +7,44 @@ const prisma = new PrismaClient();
 // userId -> Set of socketIds
 const onlineUsers = new Map<string, Set<string>>();
 
+// === GROUP CALL ROOMS ===
+interface GroupRoom {
+  roomId: string;
+  callId: string;
+  chatId: string;
+  participants: Map<string, { id: string; displayName: string; avatar: string | null }>;
+}
+const groupRooms = new Map<string, GroupRoom>();
+// userId -> roomId (track which room a user is in)
+const userRoomMap = new Map<string, string>();
+
 function getUserSockets(userId: string): Set<string> {
   return onlineUsers.get(userId) || new Set();
+}
+
+function handleGroupLeave(userId: string, roomId: string, socket: Socket, io: Server) {
+  const room = groupRooms.get(roomId);
+  if (!room) return;
+
+  room.participants.delete(userId);
+  userRoomMap.delete(userId);
+  socket.leave(roomId);
+
+  // Notify remaining participants
+  socket.to(roomId).emit('group:peer-left', { userId });
+
+  console.log(`📞 ${userId} left group ${roomId} (${room.participants.size} remaining)`);
+
+  // If room is empty, clean up
+  if (room.participants.size === 0) {
+    groupRooms.delete(roomId);
+    // End call in DB
+    prisma.call.update({
+      where: { id: room.callId },
+      data: { status: 'ENDED', endedAt: new Date() },
+    }).catch(() => {});
+    console.log(`📞 Group room ${roomId} destroyed (empty)`);
+  }
 }
 
 export function setupSocketHandlers(io: Server) {
@@ -253,6 +289,64 @@ export function setupSocketHandlers(io: Server) {
       }
     });
 
+    // === MESSAGE EDIT / DELETE / PIN (real-time broadcast) ===
+
+    socket.on('message:edit', async (data: { messageId: string; chatId: string; text: string }) => {
+      try {
+        const msg = await prisma.message.findUnique({ where: { id: data.messageId } });
+        if (!msg || msg.senderId !== userId) return;
+        const updated = await prisma.message.update({
+          where: { id: data.messageId },
+          data: { text: data.text.trim(), editedAt: new Date() },
+          include: {
+            sender: { select: { id: true, displayName: true, avatar: true } },
+            replyTo: { include: { sender: { select: { id: true, displayName: true } } } },
+            media: true,
+          },
+        });
+        io.to(`chat:${data.chatId}`).emit('message:edited', updated);
+      } catch (err) {
+        console.error('socket message:edit error:', err);
+      }
+    });
+
+    socket.on('message:delete', async (data: { messageId: string; chatId: string; forAll: boolean }) => {
+      try {
+        const msg = await prisma.message.findUnique({ where: { id: data.messageId } });
+        if (!msg || msg.senderId !== userId) return;
+        await prisma.message.update({
+          where: { id: data.messageId },
+          data: { deletedAt: new Date(), deletedForAll: data.forAll },
+        });
+        io.to(`chat:${data.chatId}`).emit('message:deleted', {
+          messageId: data.messageId,
+          chatId: data.chatId,
+          forAll: data.forAll,
+          deletedBy: userId,
+        });
+      } catch (err) {
+        console.error('socket message:delete error:', err);
+      }
+    });
+
+    socket.on('message:pin', async (data: { messageId: string; chatId: string; pin: boolean }) => {
+      try {
+        const member = await prisma.chatMember.findFirst({ where: { chatId: data.chatId, userId } });
+        if (!member) return;
+        await prisma.message.update({
+          where: { id: data.messageId },
+          data: { pinnedAt: data.pin ? new Date() : null },
+        });
+        io.to(`chat:${data.chatId}`).emit('message:pinned', {
+          messageId: data.messageId,
+          chatId: data.chatId,
+          pinned: data.pin,
+        });
+      } catch (err) {
+        console.error('socket message:pin error:', err);
+      }
+    });
+
     // === WATCH TOGETHER (movie sync) ===
     socket.on('movie:select', (data: { targetUserId: string; callId: string; movie: any }) => {
       try {
@@ -282,6 +376,147 @@ export function setupSocketHandlers(io: Server) {
       socket.join(`chat:${data.chatId}`);
     });
 
+    // === GROUP CALLS (Mesh P2P signaling) ===
+
+    // Create a group call room from a chat
+    socket.on('group:create', async (data: { chatId: string; memberIds: string[] }) => {
+      try {
+        const caller = await prisma.user.findUnique({
+          where: { id: userId },
+          select: { id: true, displayName: true, avatar: true },
+        });
+        if (!caller) return;
+
+        // Create call record in DB
+        const call = await prisma.call.create({
+          data: {
+            initiatorId: userId,
+            type: 'VIDEO',
+            participants: {
+              create: data.memberIds.map((uid) => ({ userId: uid })),
+            },
+          },
+        });
+
+        const roomId = `group_${call.id}`;
+        const room: GroupRoom = {
+          roomId,
+          callId: call.id,
+          chatId: data.chatId,
+          participants: new Map(),
+        };
+        room.participants.set(userId, caller);
+        groupRooms.set(roomId, room);
+        userRoomMap.set(userId, roomId);
+
+        // Join socket.io room
+        socket.join(roomId);
+
+        // Notify caller
+        socket.emit('group:created', { roomId, callId: call.id });
+
+        // Notify all members about incoming group call
+        for (const memberId of data.memberIds) {
+          if (memberId === userId) continue;
+          const memberSockets = getUserSockets(memberId);
+          memberSockets.forEach((socketId) => {
+            io.to(socketId).emit('group:incoming', {
+              roomId,
+              callId: call.id,
+              chatId: data.chatId,
+              caller,
+              participants: Array.from(room.participants.values()),
+            });
+          });
+        }
+
+        console.log(`📞 Group call created: ${roomId} by ${caller.displayName} (${data.memberIds.length} members)`);
+      } catch (err) {
+        console.error('group:create error:', err);
+        socket.emit('error', { message: 'Ошибка создания группового звонка' });
+      }
+    });
+
+    // Join an existing group call room
+    socket.on('group:join', async (data: { roomId: string }) => {
+      try {
+        const room = groupRooms.get(data.roomId);
+        if (!room) {
+          socket.emit('error', { message: 'Комната не найдена' });
+          return;
+        }
+
+        const joiner = await prisma.user.findUnique({
+          where: { id: userId },
+          select: { id: true, displayName: true, avatar: true },
+        });
+        if (!joiner) return;
+
+        // Send existing participants to the joiner
+        const existingParticipants = Array.from(room.participants.values()).filter(p => p.id !== userId);
+        socket.emit('group:participants', { participants: existingParticipants });
+
+        // Add joiner to room
+        room.participants.set(userId, joiner);
+        userRoomMap.set(userId, data.roomId);
+        socket.join(data.roomId);
+
+        // Notify others about new peer
+        socket.to(data.roomId).emit('group:peer-joined', { userId, user: joiner });
+
+        // Update call status if not active
+        try {
+          await prisma.call.update({
+            where: { id: room.callId },
+            data: { status: 'ACTIVE', startedAt: new Date() },
+          });
+        } catch (_) { /* might already be ACTIVE */ }
+
+        console.log(`📞 ${joiner.displayName} joined group ${data.roomId} (${room.participants.size} participants)`);
+      } catch (err) {
+        console.error('group:join error:', err);
+      }
+    });
+
+    // Leave group call
+    socket.on('group:leave', (data: { roomId: string }) => {
+      handleGroupLeave(userId, data.roomId, socket, io);
+    });
+
+    // Group WebRTC signaling (peer-to-peer within group)
+    socket.on('group:offer', (data: { targetUserId: string; offer: any }) => {
+      try {
+        const targetSockets = getUserSockets(data.targetUserId);
+        targetSockets.forEach((socketId) => {
+          io.to(socketId).emit('group:offer', { userId, offer: data.offer });
+        });
+      } catch (err) {
+        console.error('group:offer relay error:', err);
+      }
+    });
+
+    socket.on('group:answer', (data: { targetUserId: string; answer: any }) => {
+      try {
+        const targetSockets = getUserSockets(data.targetUserId);
+        targetSockets.forEach((socketId) => {
+          io.to(socketId).emit('group:answer', { userId, answer: data.answer });
+        });
+      } catch (err) {
+        console.error('group:answer relay error:', err);
+      }
+    });
+
+    socket.on('group:ice-candidate', (data: { targetUserId: string; candidate: any }) => {
+      try {
+        const targetSockets = getUserSockets(data.targetUserId);
+        targetSockets.forEach((socketId) => {
+          io.to(socketId).emit('group:ice-candidate', { userId, candidate: data.candidate });
+        });
+      } catch (err) {
+        console.error('group:ice-candidate relay error:', err);
+      }
+    });
+
     // === DISCONNECT ===
     socket.on('disconnect', async () => {
       console.log(`❌ User disconnected: ${userId} (socket: ${socket.id})`);
@@ -296,6 +531,12 @@ export function setupSocketHandlers(io: Server) {
             data: { isOnline: false, lastSeen: new Date() },
           });
           socket.broadcast.emit('user:online', { userId, isOnline: false, lastSeen: new Date() });
+
+          // Handle group call cleanup on disconnect
+          const roomId = userRoomMap.get(userId);
+          if (roomId) {
+            handleGroupLeave(userId, roomId, socket, io);
+          }
         }
       }
     });

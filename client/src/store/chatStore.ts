@@ -10,9 +10,14 @@ export interface ChatMessage {
   type: string;
   status: string;
   replyToId: string | null;
+  forwardedFromId: string | null;
+  editedAt: string | null;
+  pinnedAt: string | null;
+  deletedForAll: boolean;
   createdAt: string;
   sender: { id: string; displayName: string; avatar: string | null };
   replyTo?: { id: string; text: string | null; sender: { id: string; displayName: string } } | null;
+  forwardedFrom?: { id: string; text: string | null; sender: { id: string; displayName: string } } | null;
   media?: Array<{ id: string; url: string; filename: string; mimeType: string; size: number; duration?: number }>;
 }
 
@@ -44,6 +49,12 @@ interface ChatState {
   fetchMessages: (chatId: string) => Promise<void>;
   sendMessage: (data: { chatId: string; text?: string; type?: string; replyToId?: string; mediaIds?: string[] }) => void;
   addMessage: (message: ChatMessage) => void;
+  editMessage: (messageId: string, chatId: string, text: string) => void;
+  deleteMessage: (messageId: string, chatId: string, forAll: boolean) => void;
+  pinMessage: (messageId: string, chatId: string, pin: boolean) => void;
+  applyEditedMessage: (message: ChatMessage) => void;
+  applyDeletedMessage: (messageId: string, chatId: string, forAll: boolean, currentUserId: string) => void;
+  applyPinnedMessage: (messageId: string, chatId: string, pinned: boolean) => void;
   createPrivateChat: (userId: string) => Promise<Chat>;
   createGroupChat: (name: string, memberIds: string[]) => Promise<Chat>;
   setTyping: (chatId: string, userId: string, isTyping: boolean) => void;
@@ -135,6 +146,56 @@ export const useChatStore = create<ChatState>((set, get) => ({
   updateMessageStatus: (messageId, status) => {
     set({
       messages: get().messages.map((m) => (m.id === messageId ? { ...m, status } : m)),
+    });
+  },
+
+  editMessage: (messageId, chatId, text) => {
+    const socket = getSocket();
+    socket?.emit('message:edit', { messageId, chatId, text });
+  },
+
+  deleteMessage: (messageId, chatId, forAll) => {
+    const socket = getSocket();
+    socket?.emit('message:delete', { messageId, chatId, forAll });
+  },
+
+  pinMessage: (messageId, chatId, pin) => {
+    const socket = getSocket();
+    socket?.emit('message:pin', { messageId, chatId, pin });
+  },
+
+  applyEditedMessage: (message) => {
+    set({
+      messages: get().messages.map((m) => (m.id === message.id ? { ...m, ...message } : m)),
+    });
+  },
+
+  applyDeletedMessage: (messageId, chatId, forAll, currentUserId) => {
+    set({
+      messages: get().messages.map((m) => {
+        if (m.id !== messageId) return m;
+        if (forAll || m.senderId === currentUserId) {
+          return { ...m, text: null, deletedForAll: true, deletedAt: new Date().toISOString() } as any;
+        }
+        return m;
+      }),
+    });
+    // Remove from chat list last message if needed
+    const { chats } = get();
+    set({
+      chats: chats.map((c) =>
+        c.id === chatId && c.lastMessage?.id === messageId
+          ? { ...c, lastMessage: { ...c.lastMessage, text: 'Сообщение удалено' } }
+          : c
+      ),
+    });
+  },
+
+  applyPinnedMessage: (messageId, chatId, pinned) => {
+    set({
+      messages: get().messages.map((m) =>
+        m.id === messageId ? { ...m, pinnedAt: pinned ? new Date().toISOString() : null } : m
+      ),
     });
   },
 }));
