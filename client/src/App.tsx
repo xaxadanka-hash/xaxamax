@@ -11,6 +11,7 @@ import RegisterPage from './pages/RegisterPage';
 import MainLayout from './components/layout/MainLayout';
 import CallModal from './components/call/CallModal';
 import { AnimatePresence } from 'framer-motion';
+import { normalizeMediaUrls } from './utils/mediaUrl';
 
 function App() {
   const { isAuthenticated, isLoading, checkAuth, user } = useAuthStore();
@@ -53,7 +54,7 @@ function App() {
       };
     };
 
-    socket.on(SOCKET_EVENTS.message.new, (message) => addMessage(message));
+    socket.on(SOCKET_EVENTS.message.new, (message) => addMessage(normalizeMediaUrls(message)));
     socket.on(SOCKET_EVENTS.message.status, ({ messageId, status }) => {
       updateMessageStatus(messageId, status);
     });
@@ -64,7 +65,7 @@ function App() {
     });
     socket.on(SOCKET_EVENTS.message.typing, ({ chatId, userId: uid }) => setTyping(chatId, uid, true));
     socket.on(SOCKET_EVENTS.message.stopTyping, ({ chatId, userId: uid }) => setTyping(chatId, uid, false));
-    socket.on(SOCKET_EVENTS.message.edited, (message) => applyEditedMessage(message));
+    socket.on(SOCKET_EVENTS.message.edited, (message) => applyEditedMessage(normalizeMediaUrls(message)));
     socket.on(SOCKET_EVENTS.message.deleted, ({ messageId, chatId, forAll }) => {
       applyDeletedMessage(messageId, chatId, forAll, user?.id || '');
     });

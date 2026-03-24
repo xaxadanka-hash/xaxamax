@@ -101,6 +101,129 @@ async function notifyChatMembersAboutMessage(
   );
 }
 
+type CallSummaryStatus = 'ENDED' | 'MISSED' | 'DECLINED';
+type CallSummaryType = 'AUDIO' | 'VIDEO' | 'SCREEN_SHARE';
+
+const CALL_TYPE_LABELS: Record<CallSummaryType, string> = {
+  AUDIO: 'аудиозвонок',
+  VIDEO: 'видеозвонок',
+  SCREEN_SHARE: 'демонстрация экрана',
+};
+
+const TERMINAL_CALL_STATUSES = new Set(['ENDED', 'DECLINED', 'MISSED']);
+
+function formatCallDuration(seconds: number) {
+  if (seconds < 60) return `${seconds}с`;
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return secs === 0 ? `${mins}м` : `${mins}м ${secs}с`;
+}
+
+function buildCallSummaryText(status: CallSummaryStatus, type: CallSummaryType, durationSec?: number) {
+  const typeLabel = CALL_TYPE_LABELS[type] || 'звонок';
+  if (status === 'MISSED') return `📞 Пропущенный ${typeLabel}`;
+  if (status === 'DECLINED') return `📵 Отклонён ${typeLabel}`;
+  if (durationSec && durationSec > 0) {
+    return `📞 Завершён ${typeLabel} · ${formatCallDuration(durationSec)}`;
+  }
+  return `📞 Завершён ${typeLabel}`;
+}
+
+function getGroupChatIdByCallId(callId: string) {
+  for (const room of groupRooms.values()) {
+    if (room.callId === callId) {
+      return room.chatId;
+    }
+  }
+  return null;
+}
+
+async function ensureChatRoomMembership(io: Server, chatId: string) {
+  const members = await prisma.chatMember.findMany({
+    where: { chatId },
+    select: { userId: true },
+  });
+
+  const roomName = `chat:${chatId}`;
+  members.forEach((member) => {
+    const sockets = getUserSockets(member.userId);
+    sockets.forEach((socketId) => {
+      io.sockets.sockets.get(socketId)?.join(roomName);
+    });
+  });
+}
+
+async function findOrCreatePrivateChat(userA: string, userB: string) {
+  const existing = await prisma.chat.findFirst({
+    where: {
+      type: 'PRIVATE',
+      AND: [
+        { members: { some: { userId: userA } } },
+        { members: { some: { userId: userB } } },
+      ],
+    },
+    select: { id: true },
+  });
+
+  if (existing) return existing.id;
+
+  const created = await prisma.chat.create({
+    data: {
+      type: 'PRIVATE',
+      members: {
+        create: [{ userId: userA }, { userId: userB }],
+      },
+    },
+    select: { id: true },
+  });
+
+  return created.id;
+}
+
+async function resolveCallChatId(callId: string, participantIds: string[]) {
+  const groupChatId = getGroupChatIdByCallId(callId);
+  if (groupChatId) return groupChatId;
+
+  const uniqueParticipants = [...new Set(participantIds)];
+  if (uniqueParticipants.length !== 2) return null;
+  return findOrCreatePrivateChat(uniqueParticipants[0], uniqueParticipants[1]);
+}
+
+async function emitCallSummaryMessage(
+  io: Server,
+  params: {
+    callId: string;
+    actorId: string;
+    participantIds: string[];
+    type: CallSummaryType;
+    status: CallSummaryStatus;
+    durationSec?: number;
+  },
+) {
+  const chatId = await resolveCallChatId(params.callId, params.participantIds);
+  if (!chatId) return;
+
+  await ensureChatRoomMembership(io, chatId);
+
+  const message = await prisma.message.create({
+    data: {
+      chatId,
+      senderId: params.actorId,
+      type: 'SYSTEM',
+      text: buildCallSummaryText(params.status, params.type, params.durationSec),
+    },
+    include: messageInclude,
+  });
+
+  await prisma.chat.update({
+    where: { id: chatId },
+    data: { updatedAt: new Date() },
+  });
+
+  io.to(`chat:${chatId}`).emit(SOCKET_EVENTS.message.new, message);
+  await notifyChatMembersAboutMessage(io, params.actorId, chatId, message, message.sender.displayName);
+}
+
 function handleGroupLeave(userId: string, roomId: string, socket: Socket, io: Server) {
   const room = groupRooms.get(roomId);
   if (!room) return;
@@ -117,11 +240,43 @@ function handleGroupLeave(userId: string, roomId: string, socket: Socket, io: Se
   // If room is empty, clean up
   if (room.participants.size === 0) {
     groupRooms.delete(roomId);
-    // End call in DB
-    prisma.call.update({
-      where: { id: room.callId },
-      data: { status: 'ENDED', endedAt: new Date() },
-    }).catch(() => {});
+    // End call in DB and add system message only once.
+    void (async () => {
+      const updateResult = await prisma.call.updateMany({
+        where: { id: room.callId, status: { in: ['RINGING', 'ACTIVE'] } },
+        data: { status: 'ENDED', endedAt: new Date() },
+      });
+      if (updateResult.count === 0) return;
+
+      const call = await prisma.call.findUnique({
+        where: { id: room.callId },
+        select: {
+          id: true,
+          type: true,
+          initiatorId: true,
+          startedAt: true,
+          participants: { select: { userId: true } },
+        },
+      });
+
+      if (!call) return;
+
+      const allParticipantIds = [call.initiatorId, ...call.participants.map((participant) => participant.userId)];
+      const durationSec = call.startedAt
+        ? Math.max(1, Math.round((Date.now() - call.startedAt.getTime()) / 1000))
+        : undefined;
+
+      await emitCallSummaryMessage(io, {
+        callId: call.id,
+        actorId: call.initiatorId,
+        participantIds: allParticipantIds,
+        type: call.type as CallSummaryType,
+        status: 'ENDED',
+        durationSec,
+      });
+    })().catch((err) => {
+      console.error('group:leave summary error:', err);
+    });
     console.log(`📞 Group room ${roomId} destroyed (empty)`);
   }
 }
@@ -205,7 +360,9 @@ export function setupSocketHandlers(io: Server) {
       select: {
         id: true,
         initiatorId: true,
+        type: true,
         status: true,
+        startedAt: true,
         participants: {
           select: { userId: true },
         },
@@ -459,6 +616,7 @@ export function setupSocketHandlers(io: Server) {
       try {
         const call = await getAccessibleCall(data.callId);
         if (!call || call.initiatorId === userId) return;
+        if (TERMINAL_CALL_STATUSES.has(call.status)) return;
 
         await prisma.call.update({
           where: { id: data.callId },
@@ -470,6 +628,15 @@ export function setupSocketHandlers(io: Server) {
             io.to(socketId).emit(SOCKET_EVENTS.call.declined, { callId: data.callId });
           });
         }
+
+        const participantIds = [call.initiatorId, ...call.participants.map((participant) => participant.userId)];
+        await emitCallSummaryMessage(io, {
+          callId: call.id,
+          actorId: userId,
+          participantIds,
+          type: call.type as CallSummaryType,
+          status: 'DECLINED',
+        });
       } catch (err) {
         console.error('Decline call error:', err);
       }
@@ -479,10 +646,14 @@ export function setupSocketHandlers(io: Server) {
       try {
         const accessibleCall = await getAccessibleCall(data.callId);
         if (!accessibleCall) return;
+        if (TERMINAL_CALL_STATUSES.has(accessibleCall.status)) return;
+
+        const status = accessibleCall.status === 'RINGING' ? 'MISSED' : 'ENDED';
+        const endedAt = new Date();
 
         const call = await prisma.call.update({
           where: { id: data.callId },
-          data: { status: 'ENDED', endedAt: new Date() },
+          data: { status, endedAt },
           include: { participants: true },
         });
 
@@ -495,6 +666,19 @@ export function setupSocketHandlers(io: Server) {
               io.to(socketId).emit(SOCKET_EVENTS.call.ended, { callId: data.callId });
             });
           }
+        });
+
+        const durationSec = call.startedAt
+          ? Math.max(1, Math.round((endedAt.getTime() - call.startedAt.getTime()) / 1000))
+          : undefined;
+
+        await emitCallSummaryMessage(io, {
+          callId: call.id,
+          actorId: userId,
+          participantIds: allUserIds,
+          type: call.type as CallSummaryType,
+          status: status as CallSummaryStatus,
+          durationSec,
         });
       } catch (err) {
         console.error('End call error:', err);

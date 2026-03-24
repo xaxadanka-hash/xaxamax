@@ -335,12 +335,20 @@ export default function FeedPage() {
                   >
                     {(comments[post.id] || []).map((c) => (
                       <div key={c.id} className="flex gap-2 mb-3">
-                        <div className="w-7 h-7 rounded-full bg-dark-700 flex items-center justify-center text-[10px] font-medium flex-shrink-0">
+                        <button
+                          onClick={() => navigate(`/profile/${c.author.id}`)}
+                          className="w-7 h-7 rounded-full bg-dark-700 flex items-center justify-center text-[10px] font-medium flex-shrink-0 overflow-hidden hover:ring-2 hover:ring-primary-500/50 transition-all"
+                        >
                           {c.author.avatar ? <img src={c.author.avatar} className="w-full h-full rounded-full object-cover" alt="" /> : getInitials(c.author.displayName)}
-                        </div>
+                        </button>
                         <div className="flex-1">
                           <div className="bg-dark-800/50 rounded-xl px-3 py-2">
-                            <p className="text-xs font-medium text-dark-300">{c.author.displayName}</p>
+                            <button
+                              onClick={() => navigate(`/profile/${c.author.id}`)}
+                              className="text-xs font-medium text-dark-300 hover:text-primary-300 transition-colors"
+                            >
+                              {c.author.displayName}
+                            </button>
                             {c.type === 'VOICE' && c.media?.[0] ? (
                               <div className="mt-1">
                                 <VoicePlayer

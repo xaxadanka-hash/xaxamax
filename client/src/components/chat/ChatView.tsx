@@ -371,6 +371,11 @@ export default function ChatView({ onBack }: ChatViewProps) {
   const activeChatMembers = activeChat?.members || [];
   const otherUser = activeChatMembers.find(m => m.userId !== user?.id)?.user;
   const isGroup = activeChat?.type === 'GROUP';
+  const canOpenPrivateProfile = !isGroup && !!otherUser?.id;
+  const openPrivateProfile = () => {
+    if (!otherUser?.id) return;
+    navigate(`/profile/${otherUser.id}`);
+  };
   const activeTypingUserIds = Array.from(typingUsers.get(activeChat?.id || '') || []).filter((typingUserId) => typingUserId !== user?.id);
   const activeTypingNames = activeTypingUserIds
     .map((typingUserId) => activeChatMembers.find((member) => member.userId === typingUserId)?.user.displayName)
@@ -463,26 +468,51 @@ export default function ChatView({ onBack }: ChatViewProps) {
         <button onClick={onBack} className="md:hidden btn-ghost p-1.5 rounded-lg tap-target">
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <div className="relative shrink-0">
-          <div className="w-10 h-10 rounded-full bg-dark-700 flex items-center justify-center text-sm font-medium overflow-hidden">
-            {activeChat.avatar
-              ? <img src={activeChat.avatar} className="w-full h-full object-cover" alt="" />
-              : getInitials(activeChat.name || '?')}
-          </div>
-          {otherUser?.isOnline && !isGroup && (
-            <div className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-green-500 border-2 border-dark-900" />
-          )}
-        </div>
-        <div className="flex-1 min-w-0">
-          <h3 className="text-sm font-semibold text-white truncate">{activeChat.name || 'Чат'}</h3>
-          <p className="text-xs text-dark-400">
-            {typingLabel
-              ? <span className="text-primary-400">{typingLabel}</span>
-              : isGroup
-                ? <span className="flex items-center gap-1"><Users className="w-3 h-3" />{activeChat.members.length} участников</span>
-                : otherUser?.isOnline ? 'в сети' : 'не в сети'}
-          </p>
-        </div>
+        {canOpenPrivateProfile ? (
+          <button
+            onClick={openPrivateProfile}
+            className="flex items-center gap-2 min-w-0 flex-1 text-left rounded-xl hover:bg-dark-800/40 transition-colors py-1 pr-1"
+            title="Открыть профиль"
+          >
+            <div className="relative shrink-0">
+              <div className="w-10 h-10 rounded-full bg-dark-700 flex items-center justify-center text-sm font-medium overflow-hidden">
+                {activeChat.avatar
+                  ? <img src={activeChat.avatar} className="w-full h-full object-cover" alt="" />
+                  : getInitials(activeChat.name || '?')}
+              </div>
+              {otherUser?.isOnline && (
+                <div className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-green-500 border-2 border-dark-900" />
+              )}
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-white truncate">{activeChat.name || 'Чат'}</h3>
+              <p className="text-xs text-dark-400">{typingLabel ? <span className="text-primary-400">{typingLabel}</span> : otherUser?.isOnline ? 'в сети' : 'не в сети'}</p>
+            </div>
+          </button>
+        ) : (
+          <>
+            <div className="relative shrink-0">
+              <div className="w-10 h-10 rounded-full bg-dark-700 flex items-center justify-center text-sm font-medium overflow-hidden">
+                {activeChat.avatar
+                  ? <img src={activeChat.avatar} className="w-full h-full object-cover" alt="" />
+                  : getInitials(activeChat.name || '?')}
+              </div>
+              {otherUser?.isOnline && !isGroup && (
+                <div className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-green-500 border-2 border-dark-900" />
+              )}
+            </div>
+            <div className="flex-1 min-w-0">
+              <h3 className="text-sm font-semibold text-white truncate">{activeChat.name || 'Чат'}</h3>
+              <p className="text-xs text-dark-400">
+                {typingLabel
+                  ? <span className="text-primary-400">{typingLabel}</span>
+                  : isGroup
+                    ? <span className="flex items-center gap-1"><Users className="w-3 h-3" />{activeChat.members.length} участников</span>
+                    : otherUser?.isOnline ? 'в сети' : 'не в сети'}
+              </p>
+            </div>
+          </>
+        )}
         <div className="flex items-center gap-0.5 sm:gap-1">
           <button
             onClick={() => {

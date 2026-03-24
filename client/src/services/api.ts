@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { normalizeMediaUrls } from '../utils/mediaUrl';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -16,7 +17,10 @@ api.interceptors.request.use((config) => {
 });
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    response.data = normalizeMediaUrls(response.data);
+    return response;
+  },
   async (error) => {
     if (error.response?.status === 401 && !error.config._retry) {
       error.config._retry = true;

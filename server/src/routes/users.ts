@@ -137,6 +137,43 @@ router.post('/me/contacts', async (req: AuthRequest, res: Response) => {
   try {
     const { contactId, nickname } = req.body;
     if (contactId === req.userId) return res.status(400).json({ error: 'Нельзя добавить себя' });
+    if (!contactId) return res.status(400).json({ error: 'contactId обязателен' });
+
+    const targetUser = await prisma.user.findUnique({
+      where: { id: contactId },
+      select: { id: true },
+    });
+    if (!targetUser) return res.status(404).json({ error: 'Пользователь не найден' });
+
+    const existing = await prisma.contact.findUnique({
+      where: {
+        userId_contactId: {
+          userId: req.userId!,
+          contactId,
+        },
+      },
+      include: {
+        contact: {
+          select: { id: true, phone: true, displayName: true, avatar: true, isOnline: true, lastSeen: true },
+        },
+      },
+    });
+
+    if (existing) {
+      if (nickname !== undefined && nickname !== existing.nickname) {
+        const updated = await prisma.contact.update({
+          where: { id: existing.id },
+          data: { nickname },
+          include: {
+            contact: {
+              select: { id: true, phone: true, displayName: true, avatar: true, isOnline: true, lastSeen: true },
+            },
+          },
+        });
+        return res.json(updated);
+      }
+      return res.json(existing);
+    }
 
     const contact = await prisma.contact.create({
       data: { userId: req.userId!, contactId, nickname },

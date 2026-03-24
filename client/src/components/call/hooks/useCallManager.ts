@@ -5,6 +5,7 @@ import { useAuthStore } from '../../../store/authStore';
 import { useWebRTC } from './useWebRTC';
 import { useMediaStreams, type CallMediaType } from './useMediaStreams';
 import type { TmdbMovie } from '../MovieSearch';
+import { resolveMediaUrl } from '../../../utils/mediaUrl';
 
 // ─── TYPES ────────────────────────────────────────────────────
 export type CallMode = 'IDLE' | 'RINGING' | 'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'ENDED';
@@ -36,6 +37,11 @@ export interface WatchTogetherState {
   movie: TmdbMovie | null;
   showSearch: boolean;
 }
+
+const withResolvedAvatar = (remoteUser: RemoteUser): RemoteUser => ({
+  ...remoteUser,
+  avatar: resolveMediaUrl(remoteUser.avatar),
+});
 
 const EMPTY_CALL: CallState = {
   mode: 'IDLE',
@@ -305,7 +311,7 @@ export function useCallManager() {
       isIncoming: false,
       type,
       remoteUserId: targetUserId,
-      remoteUser,
+      remoteUser: withResolvedAvatar(remoteUser),
     });
     const socket = getSocket();
     socket?.emit(SOCKET_EVENTS.call.initiate, { targetUserId, type });
@@ -389,6 +395,7 @@ export function useCallManager() {
     const onIncomingCall = (data: { callId: string; type: CallMediaType; caller: RemoteUser }) => {
       if (callRef.current.mode !== 'IDLE') return;
       log('call:incoming from', data.caller.displayName);
+      const caller = withResolvedAvatar(data.caller);
       webrtc.resetEnded();
       setCall({
         ...EMPTY_CALL,
@@ -396,8 +403,8 @@ export function useCallManager() {
         isIncoming: true,
         callId: data.callId,
         type: data.type,
-        remoteUserId: data.caller.id,
-        remoteUser: data.caller,
+        remoteUserId: caller.id,
+        remoteUser: caller,
       });
     };
 
@@ -476,21 +483,23 @@ export function useCallManager() {
       const stream = media.localStreamRef.current;
       for (const p of data.participants) {
         if (p.id === user?.id) continue;
+        const participant = withResolvedAvatar(p);
         setCall(prev => {
           const newP = new Map(prev.participants);
-          newP.set(p.id, p);
+          newP.set(participant.id, participant);
           return { ...prev, participants: newP };
         });
-        webrtc.createPeer(p.id, true, stream, 'group');
+        webrtc.createPeer(participant.id, true, stream, 'group');
       }
     };
 
     const onGroupPeerJoined = (data: { userId: string; user: RemoteUser }) => {
       if (data.userId === user?.id) return;
-      log('group:peer-joined', data.user.displayName);
+      const joinedUser = withResolvedAvatar(data.user);
+      log('group:peer-joined', joinedUser.displayName);
       setCall(prev => {
         const newP = new Map(prev.participants);
-        newP.set(data.userId, data.user);
+        newP.set(data.userId, joinedUser);
         return { ...prev, participants: newP };
       });
       // New peer joined — they will be caller to us, so we are callee
@@ -517,10 +526,14 @@ export function useCallManager() {
     // ── Incoming group call notification ──
     const onGroupIncoming = (data: { roomId: string; callId: string; chatId: string; caller: RemoteUser; participants: RemoteUser[] }) => {
       if (callRef.current.mode !== 'IDLE') return;
-      log('group:incoming from', data.caller.displayName);
+      const caller = withResolvedAvatar(data.caller);
+      log('group:incoming from', caller.displayName);
       webrtc.resetEnded();
       const participants = new Map<string, RemoteUser>();
-      data.participants.forEach(p => participants.set(p.id, p));
+      data.participants.forEach((participant) => {
+        const resolvedParticipant = withResolvedAvatar(participant);
+        participants.set(resolvedParticipant.id, resolvedParticipant);
+      });
       setCall({
         ...EMPTY_CALL,
         mode: 'RINGING',
@@ -529,8 +542,8 @@ export function useCallManager() {
         callId: data.callId,
         groupRoomId: data.roomId,
         type: 'VIDEO',
-        remoteUser: data.caller,
-        remoteUserId: data.caller.id,
+        remoteUser: caller,
+        remoteUserId: caller.id,
         participants,
       });
     };
