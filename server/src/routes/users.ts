@@ -74,12 +74,27 @@ router.put('/me', async (req: AuthRequest, res: Response) => {
 // Get user profile (must be after /me routes)
 router.get('/:id', async (req: AuthRequest, res: Response) => {
   try {
-    const user = await prisma.user.findUnique({
-      where: { id: req.params.id as string },
-      select: { id: true, phone: true, displayName: true, avatar: true, bio: true, isOnline: true, lastSeen: true, createdAt: true },
-    });
+    const targetId = req.params.id as string;
+    const [user, postsCount, contactsCount, isContact, posts] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id: targetId },
+        select: { id: true, phone: true, displayName: true, avatar: true, bio: true, isOnline: true, lastSeen: true, createdAt: true },
+      }),
+      prisma.post.count({ where: { authorId: targetId } }),
+      prisma.contact.count({ where: { userId: targetId } }),
+      prisma.contact.findFirst({ where: { userId: req.userId, contactId: targetId } }),
+      prisma.post.findMany({
+        where: { authorId: targetId },
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+        include: {
+          author: { select: { id: true, displayName: true, avatar: true } },
+          _count: { select: { likes: true, comments: true } },
+        },
+      }),
+    ]);
     if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-    res.json(user);
+    res.json({ ...user, postsCount, contactsCount, isContact: !!isContact, posts });
   } catch (err) {
     console.error('Get user error:', err);
     res.status(500).json({ error: 'Ошибка сервера' });
@@ -100,6 +115,19 @@ router.get('/me/contacts', async (req: AuthRequest, res: Response) => {
     res.json(contacts);
   } catch (err) {
     console.error('Get contacts error:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Remove contact
+router.delete('/me/contacts/:contactId', async (req: AuthRequest, res: Response) => {
+  try {
+    await prisma.contact.deleteMany({
+      where: { userId: req.userId, contactId: req.params.contactId as string },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Remove contact error:', err);
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });

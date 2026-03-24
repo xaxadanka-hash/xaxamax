@@ -72,7 +72,7 @@ router.post('/login', async (req: Request, res: Response) => {
     const tokens = generateTokens(user.id);
     res.cookie('refreshToken', tokens.refreshToken, { httpOnly: true, secure: true, sameSite: 'strict', maxAge: 30 * 24 * 60 * 60 * 1000 });
     res.json({
-      user: { id: user.id, phone: user.phone, displayName: user.displayName, avatar: user.avatar, bio: user.bio },
+      user: { id: user.id, phone: user.phone, displayName: user.displayName, avatar: user.avatar, bio: user.bio, isAdmin: user.isAdmin, isBanned: user.isBanned },
       token: tokens.token,
     });
   } catch (err) {
@@ -104,7 +104,7 @@ router.get('/me', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.userId },
-      select: { id: true, phone: true, displayName: true, avatar: true, bio: true, lastSeen: true, isOnline: true, createdAt: true },
+      select: { id: true, phone: true, displayName: true, avatar: true, bio: true, lastSeen: true, isOnline: true, isAdmin: true, isBanned: true, createdAt: true },
     });
     if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
     res.json(user);
