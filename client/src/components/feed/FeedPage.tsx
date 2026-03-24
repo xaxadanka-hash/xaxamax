@@ -9,6 +9,8 @@ import {
   Trash2, X, Play, Pause,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { VoicePlayer } from '../chat/VoiceMessage';
+import { createAudioRecorder, getAudioFileExtension } from '../../utils/audioRecording';
 
 interface Post {
   id: string;
@@ -126,15 +128,18 @@ export default function FeedPage() {
   const handleVoiceComment = async (postId: string) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
+      const { recorder: mediaRecorder, mimeType } = createAudioRecorder(stream);
       const chunks: BlobPart[] = [];
+      const startedAt = Date.now();
 
       mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
       mediaRecorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
-        const blob = new Blob(chunks, { type: 'audio/webm' });
+        const duration = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+        const blob = new Blob(chunks, { type: mimeType });
         const formData = new FormData();
-        formData.append('file', blob, 'voice.webm');
+        formData.append('file', blob, `voice.${getAudioFileExtension(mimeType)}`);
+        formData.append('duration', duration.toString());
         const { data: media } = await api.post('/media/upload', formData, {
           headers: { 'Content-Type': 'multipart/form-data' },
         });
@@ -194,10 +199,12 @@ export default function FeedPage() {
   }
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="max-w-2xl mx-auto px-4 py-6">
+    <div className="h-full overflow-y-auto no-overscroll safe-bottom">
+      <div className="max-w-3xl xl:max-w-[56rem] mx-auto px-4 sm:px-6 py-4 md:py-6 pb-[calc(5.5rem+env(safe-area-inset-bottom))] md:pb-8">
         {/* Header */}
-        <h2 className="text-2xl font-bold text-white mb-6">Лента</h2>
+        <div className="sticky top-0 z-10 bg-dark-950/95 backdrop-blur-sm border-b border-dark-800/30 -mx-4 sm:-mx-6 px-4 sm:px-6 pb-3 mb-4 md:mb-6 safe-top">
+          <h2 className="text-2xl font-bold text-white">Лента</h2>
+        </div>
 
         {/* New post */}
         <div className="glass rounded-2xl p-4 mb-6">
@@ -213,7 +220,7 @@ export default function FeedPage() {
                 className="w-full bg-transparent text-white placeholder:text-dark-500 resize-none focus:outline-none text-sm min-h-[60px]"
                 rows={2}
               />
-              <div className="flex items-center justify-between mt-2">
+              <div className="flex flex-wrap items-center justify-between gap-3 mt-2">
                 <div className="flex gap-2">
                   <button onClick={() => fileInputRef.current?.click()} className="btn-ghost p-1.5 rounded-lg">
                     <Image className="w-4 h-4" />
@@ -279,7 +286,7 @@ export default function FeedPage() {
               ))}
 
               {/* Actions */}
-              <div className="flex items-center gap-4 pt-2 border-t border-dark-800/30">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-2 border-t border-dark-800/30">
                 <button
                   onClick={() => handleLike(post.id)}
                   className={`flex items-center gap-1.5 text-sm transition-colors ${post.isLiked ? 'text-red-500' : 'text-dark-400 hover:text-red-400'}`}
@@ -317,7 +324,13 @@ export default function FeedPage() {
                           <div className="bg-dark-800/50 rounded-xl px-3 py-2">
                             <p className="text-xs font-medium text-dark-300">{c.author.displayName}</p>
                             {c.type === 'VOICE' && c.media?.[0] ? (
-                              <audio src={c.media[0].url} controls className="mt-1 max-w-full h-8" />
+                              <div className="mt-1">
+                                <VoicePlayer
+                                  src={c.media[0].url}
+                                  duration={c.media[0].duration}
+                                  isMine={c.author.id === user?.id}
+                                />
+                              </div>
                             ) : (
                               <p className="text-xs text-dark-200">{c.text}</p>
                             )}
@@ -328,7 +341,7 @@ export default function FeedPage() {
                     ))}
 
                     {/* Comment input */}
-                    <div className="flex items-center gap-2 mt-2">
+                    <div className="flex flex-wrap items-center gap-2 mt-2">
                       <input
                         type="text"
                         placeholder="Комментарий..."
@@ -337,10 +350,10 @@ export default function FeedPage() {
                         onKeyDown={(e) => e.key === 'Enter' && handleComment(post.id)}
                         className="flex-1 bg-dark-800/40 rounded-xl px-3 py-2 text-xs text-white placeholder:text-dark-500 focus:outline-none focus:ring-1 focus:ring-primary-500/30"
                       />
-                      <button onClick={() => handleVoiceComment(post.id)} className="btn-ghost p-1.5 rounded-lg" title="Голосовой комментарий">
+                      <button onClick={() => handleVoiceComment(post.id)} className="btn-ghost p-1.5 rounded-lg tap-target" title="Голосовой комментарий">
                         <Mic className="w-4 h-4" />
                       </button>
-                      <button onClick={() => handleComment(post.id)} className="btn-ghost p-1.5 rounded-lg text-primary-400">
+                      <button onClick={() => handleComment(post.id)} className="btn-ghost p-1.5 rounded-lg text-primary-400 tap-target">
                         <Send className="w-4 h-4" />
                       </button>
                     </div>

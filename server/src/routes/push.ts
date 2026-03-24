@@ -1,22 +1,23 @@
 import { Router, Response } from 'express';
 import webpush from 'web-push';
-import { prisma } from '../index';
+import { env, hasWebPush } from '../config/env';
+import { prisma } from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth';
 
 const router = Router();
 
 // Configure VAPID on module load
-if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+if (hasWebPush) {
   webpush.setVapidDetails(
-    `mailto:${process.env.VAPID_CONTACT || 'admin@xaxamax.app'}`,
-    process.env.VAPID_PUBLIC_KEY,
-    process.env.VAPID_PRIVATE_KEY,
+    `mailto:${env.VAPID_CONTACT}`,
+    env.VAPID_PUBLIC_KEY,
+    env.VAPID_PRIVATE_KEY,
   );
 }
 
 // Return public VAPID key for client to use
 router.get('/vapid-public-key', (_req, res) => {
-  res.json({ key: process.env.VAPID_PUBLIC_KEY || '' });
+  res.json({ key: env.VAPID_PUBLIC_KEY || '' });
 });
 
 // Save push subscription
@@ -67,7 +68,7 @@ export async function sendPushToUser(
   userId: string,
   payload: { title: string; body: string; tag?: string; url?: string },
 ) {
-  if (!process.env.VAPID_PUBLIC_KEY) return;
+  if (!hasWebPush) return;
   try {
     const subs = await prisma.pushSubscription.findMany({ where: { userId } });
     await Promise.allSettled(

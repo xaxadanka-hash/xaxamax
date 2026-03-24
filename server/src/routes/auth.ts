@@ -1,8 +1,9 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, type CookieOptions } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { z } from 'zod';
-import { prisma } from '../index';
+import { env, isProduction } from '../config/env';
+import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 
 const router = Router();
@@ -19,10 +20,17 @@ const loginSchema = z.object({
 });
 
 function generateTokens(userId: string) {
-  const token = jwt.sign({ userId }, process.env.JWT_SECRET!, { expiresIn: '7d' });
-  const refreshToken = jwt.sign({ userId }, process.env.JWT_REFRESH_SECRET!, { expiresIn: '30d' });
+  const token = jwt.sign({ userId }, env.JWT_SECRET, { expiresIn: '7d' });
+  const refreshToken = jwt.sign({ userId }, env.JWT_REFRESH_SECRET, { expiresIn: '30d' });
   return { token, refreshToken };
 }
+
+const refreshCookieOptions: CookieOptions = {
+  httpOnly: true,
+  secure: isProduction,
+  sameSite: isProduction ? 'strict' : 'lax',
+  maxAge: 30 * 24 * 60 * 60 * 1000,
+};
 
 // Register
 router.post('/register', async (req: Request, res: Response) => {
@@ -41,7 +49,7 @@ router.post('/register', async (req: Request, res: Response) => {
     });
 
     const tokens = generateTokens(user.id);
-    res.cookie('refreshToken', tokens.refreshToken, { httpOnly: true, secure: true, sameSite: 'strict', maxAge: 30 * 24 * 60 * 60 * 1000 });
+    res.cookie('refreshToken', tokens.refreshToken, refreshCookieOptions);
     res.json({ user, token: tokens.token });
   } catch (err) {
     if (err instanceof z.ZodError) {
@@ -61,6 +69,9 @@ router.post('/login', async (req: Request, res: Response) => {
     if (!user) {
       return res.status(401).json({ error: 'Неверный номер или пароль' });
     }
+    if (user.isBanned) {
+      return res.status(403).json({ error: 'Аккаунт заблокирован' });
+    }
 
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) {
@@ -70,7 +81,7 @@ router.post('/login', async (req: Request, res: Response) => {
     await prisma.user.update({ where: { id: user.id }, data: { isOnline: true, lastSeen: new Date() } });
 
     const tokens = generateTokens(user.id);
-    res.cookie('refreshToken', tokens.refreshToken, { httpOnly: true, secure: true, sameSite: 'strict', maxAge: 30 * 24 * 60 * 60 * 1000 });
+    res.cookie('refreshToken', tokens.refreshToken, refreshCookieOptions);
     res.json({
       user: { id: user.id, phone: user.phone, displayName: user.displayName, avatar: user.avatar, bio: user.bio, isAdmin: user.isAdmin, isBanned: user.isBanned },
       token: tokens.token,
@@ -90,11 +101,25 @@ router.post('/refresh', async (req: Request, res: Response) => {
     const refreshToken = req.cookies?.refreshToken;
     if (!refreshToken) return res.status(401).json({ error: 'Нет refresh token' });
 
-    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET!) as { userId: string };
+    const decoded = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET) as { userId: string };
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId },
+      select: { id: true, isBanned: true },
+    });
+    if (!user) {
+      res.clearCookie('refreshToken', refreshCookieOptions);
+      return res.status(401).json({ error: 'Пользователь не найден' });
+    }
+    if (user.isBanned) {
+      res.clearCookie('refreshToken', refreshCookieOptions);
+      return res.status(403).json({ error: 'Аккаунт заблокирован' });
+    }
+
     const tokens = generateTokens(decoded.userId);
-    res.cookie('refreshToken', tokens.refreshToken, { httpOnly: true, secure: true, sameSite: 'strict', maxAge: 30 * 24 * 60 * 60 * 1000 });
+    res.cookie('refreshToken', tokens.refreshToken, refreshCookieOptions);
     res.json({ token: tokens.token });
   } catch {
+    res.clearCookie('refreshToken', refreshCookieOptions);
     res.status(401).json({ error: 'Недействительный refresh token' });
   }
 });
@@ -118,7 +143,7 @@ router.get('/me', authMiddleware, async (req: AuthRequest, res: Response) => {
 router.post('/logout', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
     await prisma.user.update({ where: { id: req.userId }, data: { isOnline: false, lastSeen: new Date() } });
-    res.clearCookie('refreshToken');
+    res.clearCookie('refreshToken', refreshCookieOptions);
     res.json({ success: true });
   } catch {
     res.status(500).json({ error: 'Ошибка сервера' });

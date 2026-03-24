@@ -5,6 +5,7 @@ import { useChatStore } from './store/chatStore';
 import { useChannelStore } from './store/channelStore';
 import { useNotificationStore } from './store/notificationStore';
 import { getSocket } from './services/socket';
+import { SOCKET_EVENTS } from '@xaxamax/shared/socket-events';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import MainLayout from './components/layout/MainLayout';
@@ -13,7 +14,15 @@ import { AnimatePresence } from 'framer-motion';
 
 function App() {
   const { isAuthenticated, isLoading, checkAuth, user } = useAuthStore();
-  const { addMessage, setTyping, applyEditedMessage, applyDeletedMessage, applyPinnedMessage, applyReaction } = useChatStore();
+  const {
+    addMessage,
+    setTyping,
+    applyEditedMessage,
+    applyDeletedMessage,
+    applyPinnedMessage,
+    applyReaction,
+    updateMessageStatus,
+  } = useChatStore();
   const { addPost } = useChannelStore();
   const { addNotification } = useNotificationStore();
 
@@ -26,36 +35,89 @@ function App() {
     const socket = getSocket();
     if (!socket) return;
 
-    socket.on('message:new', (message) => addMessage(message));
-    socket.on('message:typing', ({ chatId, userId: uid }) => setTyping(chatId, uid, true));
-    socket.on('message:stop-typing', ({ chatId, userId: uid }) => setTyping(chatId, uid, false));
-    socket.on('message:edited', (message) => applyEditedMessage(message));
-    socket.on('message:deleted', ({ messageId, chatId, forAll }) => {
+    const shouldShowSystemNotification = () =>
+      document.visibilityState !== 'visible' || !document.hasFocus();
+
+    const showBrowserNotification = (title: string, body?: string | null) => {
+      if (!('Notification' in window) || Notification.permission !== 'granted') return;
+
+      const notification = new Notification(title, {
+        body: body || '',
+        tag: 'xaxamax-realtime',
+      });
+
+      notification.onclick = () => {
+        window.focus();
+        window.electronAPI?.focusWindow?.();
+        notification.close();
+      };
+    };
+
+    socket.on(SOCKET_EVENTS.message.new, (message) => addMessage(message));
+    socket.on(SOCKET_EVENTS.message.status, ({ messageId, status }) => {
+      updateMessageStatus(messageId, status);
+    });
+    socket.on(SOCKET_EVENTS.message.read, ({ messageIds }) => {
+      messageIds.forEach((messageId: string) => {
+        updateMessageStatus(messageId, 'READ');
+      });
+    });
+    socket.on(SOCKET_EVENTS.message.typing, ({ chatId, userId: uid }) => setTyping(chatId, uid, true));
+    socket.on(SOCKET_EVENTS.message.stopTyping, ({ chatId, userId: uid }) => setTyping(chatId, uid, false));
+    socket.on(SOCKET_EVENTS.message.edited, (message) => applyEditedMessage(message));
+    socket.on(SOCKET_EVENTS.message.deleted, ({ messageId, chatId, forAll }) => {
       applyDeletedMessage(messageId, chatId, forAll, user?.id || '');
     });
-    socket.on('message:pinned', ({ messageId, chatId, pinned }) => {
+    socket.on(SOCKET_EVENTS.message.pinned, ({ messageId, chatId, pinned }) => {
       applyPinnedMessage(messageId, chatId, pinned);
     });
-    socket.on('channel:new_post', ({ post }) => addPost(post));
-    socket.on('message:reaction', ({ messageId, userId: uid, emoji, reacted }) => {
+    socket.on(SOCKET_EVENTS.channel.newPost, ({ post }) => addPost(post));
+    socket.on(SOCKET_EVENTS.message.reaction, ({ messageId, userId: uid, emoji, reacted }) => {
       applyReaction(messageId, uid, emoji, reacted);
     });
-    socket.on('notification:new', (n) => {
+    socket.on(SOCKET_EVENTS.notification.new, (n) => {
       addNotification(n);
+      if (!shouldShowSystemNotification()) {
+        return;
+      }
+
+      if (window.electronAPI?.showNotification) {
+        window.electronAPI.showNotification({
+          title: n.title,
+          body: n.body,
+        });
+        return;
+      }
+
+      showBrowserNotification(n.title, n.body);
     });
 
     return () => {
-      socket.off('message:new');
-      socket.off('message:typing');
-      socket.off('message:stop-typing');
-      socket.off('message:edited');
-      socket.off('message:deleted');
-      socket.off('message:pinned');
-      socket.off('channel:new_post');
-      socket.off('message:reaction');
-      socket.off('notification:new');
+      socket.off(SOCKET_EVENTS.message.new);
+      socket.off(SOCKET_EVENTS.message.status);
+      socket.off(SOCKET_EVENTS.message.read);
+      socket.off(SOCKET_EVENTS.message.typing);
+      socket.off(SOCKET_EVENTS.message.stopTyping);
+      socket.off(SOCKET_EVENTS.message.edited);
+      socket.off(SOCKET_EVENTS.message.deleted);
+      socket.off(SOCKET_EVENTS.message.pinned);
+      socket.off(SOCKET_EVENTS.channel.newPost);
+      socket.off(SOCKET_EVENTS.message.reaction);
+      socket.off(SOCKET_EVENTS.notification.new);
     };
-  }, [isAuthenticated, addMessage, setTyping, applyEditedMessage, applyDeletedMessage, applyPinnedMessage, applyReaction, addNotification, addPost, user?.id]);
+  }, [
+    isAuthenticated,
+    addMessage,
+    setTyping,
+    applyEditedMessage,
+    applyDeletedMessage,
+    applyPinnedMessage,
+    applyReaction,
+    updateMessageStatus,
+    addNotification,
+    addPost,
+    user?.id,
+  ]);
 
   if (isLoading) {
     return (

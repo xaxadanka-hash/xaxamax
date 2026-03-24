@@ -7,6 +7,7 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
+    "pack": "electron-builder --dir --mac",
     "build": "electron-builder --mac",
     "build:dmg": "electron-builder --mac dmg"
   },

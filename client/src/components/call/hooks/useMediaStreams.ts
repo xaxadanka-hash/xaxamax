@@ -18,6 +18,7 @@ export interface UseMediaStreamsReturn {
   toggleMute: () => void;
   toggleVideo: () => Promise<void>;
   stopAllMedia: () => void;
+  setOnScreenShareEnded: (handler: (() => void) | null) => void;
   localStreamRef: React.RefObject<MediaStream | null>;
   screenStreamRef: React.RefObject<MediaStream | null>;
 }
@@ -30,6 +31,16 @@ export function useMediaStreams(): UseMediaStreamsReturn {
 
   const localStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
+  const screenShareEndedHandlerRef = useRef<(() => void) | null>(null);
+
+  // ─── STOP SCREEN SHARE ─────────────────────────────────────
+  const stopScreenShareInternal = useCallback(() => {
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach(t => t.stop());
+      screenStreamRef.current = null;
+    }
+    setIsScreenSharing(false);
+  }, []);
 
   // ─── GET CAMERA/MIC ────────────────────────────────────────
   const getLocalMedia = useCallback(async (type: CallMediaType): Promise<MediaStream | null> => {
@@ -85,6 +96,11 @@ export function useMediaStreams(): UseMediaStreamsReturn {
       if (videoTrack) {
         videoTrack.onended = () => {
           log('Screen share stopped by user (browser UI)');
+          const onScreenShareEnded = screenShareEndedHandlerRef.current;
+          if (onScreenShareEnded) {
+            onScreenShareEnded();
+            return;
+          }
           stopScreenShareInternal();
         };
       }
@@ -102,18 +118,13 @@ export function useMediaStreams(): UseMediaStreamsReturn {
     }
   }, []);
 
-  // ─── STOP SCREEN SHARE ─────────────────────────────────────
-  const stopScreenShareInternal = useCallback(() => {
-    if (screenStreamRef.current) {
-      screenStreamRef.current.getTracks().forEach(t => t.stop());
-      screenStreamRef.current = null;
-    }
-    setIsScreenSharing(false);
-  }, []);
-
   const stopScreenShare = useCallback(() => {
     stopScreenShareInternal();
   }, [stopScreenShareInternal]);
+
+  const setOnScreenShareEnded = useCallback((handler: (() => void) | null) => {
+    screenShareEndedHandlerRef.current = handler;
+  }, []);
 
   // ─── TOGGLE MUTE ───────────────────────────────────────────
   const toggleMute = useCallback(() => {
@@ -180,6 +191,7 @@ export function useMediaStreams(): UseMediaStreamsReturn {
     toggleMute,
     toggleVideo,
     stopAllMedia,
+    setOnScreenShareEnded,
     localStreamRef,
     screenStreamRef,
   };

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Mic, Square, Play, Pause, Trash2, Send } from 'lucide-react';
 import api from '../../services/api';
+import { createAudioRecorder, getAudioFileExtension } from '../../utils/audioRecording';
 
 // ─── RECORDER ─────────────────────────────────────────────────
 interface VoiceRecorderProps {
@@ -17,13 +18,15 @@ export function VoiceRecorder({ chatId, onSend, onCancel }: VoiceRecorderProps) 
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const mimeTypeRef = useRef('audio/webm');
 
   const startRecording = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
-      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+      const { recorder, mimeType } = createAudioRecorder(stream);
       mediaRecorderRef.current = recorder;
+      mimeTypeRef.current = mimeType;
       chunksRef.current = [];
 
       recorder.ondataavailable = (e) => {
@@ -45,14 +48,16 @@ export function VoiceRecorder({ chatId, onSend, onCancel }: VoiceRecorderProps) 
     return new Promise<void>((resolve) => {
       const recorder = mediaRecorderRef.current!;
       recorder.onstop = async () => {
-        const blob = new Blob(chunksRef.current, { type: 'audio/webm;codecs=opus' });
+        const mimeType = mimeTypeRef.current || recorder.mimeType || 'audio/webm';
+        const blob = new Blob(chunksRef.current, { type: mimeType });
         streamRef.current?.getTracks().forEach(t => t.stop());
         if (timerRef.current) clearInterval(timerRef.current);
 
         setUploading(true);
         try {
           const form = new FormData();
-          form.append('file', blob, `voice_${Date.now()}.webm`);
+          form.append('file', blob, `voice_${Date.now()}.${getAudioFileExtension(mimeType)}`);
+          form.append('duration', duration.toString());
           const { data: media } = await api.post('/media/upload', form, {
             headers: { 'Content-Type': 'multipart/form-data' },
           });

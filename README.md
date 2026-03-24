@@ -2,6 +2,13 @@
 
 Мессенджер нового поколения с чатами, звонками, стеной и многим другим.
 
+## План и статус
+
+- [MASTER_PLAN.md](docs/MASTER_PLAN.md) — мастер-план пересборки и развития продукта
+- [IMPLEMENTATION_TRACKER.md](docs/IMPLEMENTATION_TRACKER.md) — текущий трекер выполнения, статус фаз и ближайшие шаги
+- [UPSTREAM_REFERENCES.md](docs/UPSTREAM_REFERENCES.md) — внешние open-source референсы и правила их использования
+- [RAILWAY_DEPLOY.md](docs/RAILWAY_DEPLOY.md) — runbook по текущей Railway-базе и deploy-процессу
+
 ## Технологии
 
 - **Backend**: Node.js, Express, Socket.IO, Prisma, PostgreSQL
@@ -28,6 +35,8 @@ npx prisma migrate dev --name init
 npm run dev
 ```
 
+Для `Watch Together` и поиска фильмов на сервере желательно задать `TMDB_API_KEY`.
+
 ### 3. Клиент
 ```bash
 cd client
@@ -36,6 +45,17 @@ npm run dev
 ```
 
 Приложение будет доступно на http://localhost:5173
+
+### 4. Desktop Electron
+```bash
+npm run dev:desktop
+```
+
+Для desktop-упаковки:
+```bash
+npm run pack:desktop
+npm run build:desktop
+```
 
 ## Структура проекта
 
@@ -57,5 +77,7 @@ xaxamax/
 │   │   ├── services/    # API & Socket services
 │   │   └── styles/      # Global styles
 │   └── public/
+├── docs/             # План, трекер, архитектурные заметки
+├── shared/           # Общие контракты и типы (целевая структура)
 └── electron/         # Electron app (Phase 5)
 ```

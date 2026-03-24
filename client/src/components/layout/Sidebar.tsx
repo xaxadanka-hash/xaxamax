@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useChatStore, Chat } from '../../store/chatStore';
 import { useAuthStore } from '../../store/authStore';
@@ -11,16 +11,49 @@ import CreateGroupModal from './CreateGroupModal';
 import StoryStrip from '../stories/StoryStrip';
 import NotificationBell from '../notifications/NotificationBell';
 import api from '../../services/api';
+import { filterHiddenMessages } from '../../utils/hiddenMessages';
+
+const PENDING_CHAT_SEARCH_STORAGE_KEY = 'xaxamax:pending-chat-search';
+const OPEN_CHAT_SEARCH_EVENT = 'xaxamax:open-chat-search';
 
 interface SidebarProps {
   onChatSelect?: () => void;
+}
+
+interface SearchUser {
+  id: string;
+  phone: string;
+  displayName: string;
+  avatar: string | null;
+  isOnline: boolean;
+}
+
+interface SearchMessageResult {
+  id: string;
+  chatId: string;
+  text: string | null;
+  type: string;
+  createdAt: string;
+  sender: {
+    id: string;
+    displayName: string;
+    avatar: string | null;
+  };
+  chat: {
+    id: string;
+    name: string | null;
+    type: string;
+  };
 }
 
 export default function Sidebar({ onChatSelect }: SidebarProps) {
   const { chats, fetchChats, setActiveChat, activeChat, unreadCounts } = useChatStore();
   const { user, logout } = useAuthStore();
   const [search, setSearch] = useState('');
-  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [userResults, setUserResults] = useState<SearchUser[]>([]);
+  const [messageResults, setMessageResults] = useState<SearchMessageResult[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [showMenu, setShowMenu] = useState(false);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const navigate = useNavigate();
@@ -30,25 +63,90 @@ export default function Sidebar({ onChatSelect }: SidebarProps) {
     fetchChats();
   }, [fetchChats]);
 
+  const normalizedSearch = search.trim();
+  const hasActiveSearch = normalizedSearch.length > 0;
+  const chatLookup = useMemo(() => new Map(chats.map((chat) => [chat.id, chat])), [chats]);
+
+  const filteredChats = useMemo(() => {
+    if (!hasActiveSearch) return [];
+
+    const query = normalizedSearch.toLowerCase();
+    return chats
+      .filter((chat) => {
+        const name = (chat.name || '').toLowerCase();
+        const lastMessageText = (chat.lastMessage?.text || '').toLowerCase();
+        const memberNames = chat.members.map((member) => member.user.displayName.toLowerCase()).join(' ');
+        return name.includes(query) || lastMessageText.includes(query) || memberNames.includes(query);
+      })
+      .slice(0, 8);
+  }, [chats, hasActiveSearch, normalizedSearch]);
+
   useEffect(() => {
-    if (!search.trim()) { setSearchResults([]); return; }
-    const timer = setTimeout(async () => {
+    if (!hasActiveSearch) {
+      setUserResults([]);
+      setMessageResults([]);
+      setSearchError(null);
+      setIsSearching(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(async () => {
+      setIsSearching(true);
+      setSearchError(null);
+
       try {
-        const { data } = await api.get(`/users/search?q=${encodeURIComponent(search)}`);
-        setSearchResults(data);
-      } catch { setSearchResults([]); }
+        const [usersResponse, messagesResponse] = await Promise.all([
+          api.get('/users/search', {
+            params: { q: normalizedSearch },
+            signal: controller.signal,
+          }),
+          api.get('/messages/search', {
+            params: { q: normalizedSearch, limit: 12 },
+            signal: controller.signal,
+          }),
+        ]);
+
+        setUserResults(usersResponse.data || []);
+        setMessageResults(filterHiddenMessages(messagesResponse.data.messages || [], user?.id));
+      } catch (err: any) {
+        if (err?.code === 'ERR_CANCELED' || controller.signal.aborted) return;
+        console.error('Sidebar search error:', err);
+        setUserResults([]);
+        setMessageResults([]);
+        setSearchError('Не удалось выполнить поиск');
+      } finally {
+        if (!controller.signal.aborted) {
+          setIsSearching(false);
+        }
+      }
     }, 300);
-    return () => clearTimeout(timer);
-  }, [search]);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeoutId);
+    };
+  }, [hasActiveSearch, normalizedSearch, user?.id]);
+
+  const clearSearch = () => {
+    setSearch('');
+    setUserResults([]);
+    setMessageResults([]);
+    setSearchError(null);
+    setIsSearching(false);
+  };
+
+  const finalizeSelection = () => {
+    clearSearch();
+    onChatSelect?.();
+    navigate('/');
+  };
 
   const handleUserClick = async (userId: string) => {
     try {
       const chat = await useChatStore.getState().createPrivateChat(userId);
       setActiveChat(chat);
-      setSearch('');
-      setSearchResults([]);
-      onChatSelect?.();
-      navigate('/');
+      finalizeSelection();
     } catch (err) {
       console.error('Create chat error:', err);
     }
@@ -56,8 +154,35 @@ export default function Sidebar({ onChatSelect }: SidebarProps) {
 
   const handleChatClick = (chat: Chat) => {
     setActiveChat(chat);
-    onChatSelect?.();
-    navigate('/');
+    finalizeSelection();
+  };
+
+  const openChatById = async (chatId: string) => {
+    const existingChat = chatLookup.get(chatId);
+    if (existingChat) {
+      setActiveChat(existingChat);
+      return existingChat;
+    }
+
+    const { data } = await api.get(`/chats/${chatId}`);
+    setActiveChat(data as Chat);
+    return data as Chat;
+  };
+
+  const handleMessageClick = async (message: SearchMessageResult) => {
+    const payload = { chatId: message.chatId, query: normalizedSearch };
+
+    try {
+      window.sessionStorage.setItem(PENDING_CHAT_SEARCH_STORAGE_KEY, JSON.stringify(payload));
+      await openChatById(message.chatId);
+      finalizeSelection();
+      window.setTimeout(() => {
+        window.dispatchEvent(new CustomEvent(OPEN_CHAT_SEARCH_EVENT, { detail: payload }));
+      }, 0);
+    } catch (err) {
+      window.sessionStorage.removeItem(PENDING_CHAT_SEARCH_STORAGE_KEY);
+      console.error('Open message search result error:', err);
+    }
   };
 
   const getInitials = (name: string) => name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase();
@@ -68,10 +193,48 @@ export default function Sidebar({ onChatSelect }: SidebarProps) {
     } catch { return ''; }
   };
 
+  const getChatPreview = (chat: Chat) => {
+    if (!chat.lastMessage) return 'Нет сообщений';
+    if (chat.lastMessage.deletedForAll) return 'Сообщение удалено';
+    if (chat.lastMessage.text) return chat.lastMessage.text;
+
+    switch (chat.lastMessage.type) {
+      case 'IMAGE':
+        return '🖼 Фото';
+      case 'VOICE':
+        return '🎤 Голосовое';
+      case 'VIDEO':
+        return '🎬 Видео';
+      default:
+        return '📎 Файл';
+    }
+  };
+
+  const getMessagePreview = (message: SearchMessageResult) => {
+    if (message.text?.trim()) return message.text;
+
+    switch (message.type) {
+      case 'IMAGE':
+        return '🖼 Фото';
+      case 'VOICE':
+        return '🎤 Голосовое сообщение';
+      case 'VIDEO':
+        return '🎬 Видео';
+      default:
+        return '📎 Медиафайл';
+    }
+  };
+
+  const getSearchChatName = (message: SearchMessageResult) => {
+    return chatLookup.get(message.chatId)?.name || message.chat.name || 'Чат';
+  };
+
+  const hasSearchResults = filteredChats.length > 0 || userResults.length > 0 || messageResults.length > 0;
+
   return (
-    <div className="h-full flex flex-col bg-dark-950 border-r border-dark-800/50">
+    <div className="relative h-full min-h-dvh flex flex-col bg-dark-950 border-r border-dark-800/50 safe-top safe-x overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-dark-800/50">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-dark-800/50 shrink-0">
         <h1 className="text-xl font-bold text-white flex items-center gap-2">
           <MessageCircle className="w-6 h-6 text-primary-500" />
           xaxamax
@@ -93,18 +256,24 @@ export default function Sidebar({ onChatSelect }: SidebarProps) {
 
       {/* Menu dropdown */}
       {showMenu && (
-        <div className="absolute top-14 right-2 z-50 glass rounded-xl p-1 min-w-[200px] shadow-xl">
-          <button onClick={() => { navigate('/profile'); setShowMenu(false); }}
-            className="sidebar-item w-full text-left">
+        <div className="absolute top-[calc(env(safe-area-inset-top)+3.5rem)] right-2 z-50 glass rounded-xl p-1 min-w-[220px] shadow-xl">
+          <button
+            onClick={() => { navigate('/profile'); setShowMenu(false); }}
+            className="sidebar-item w-full text-left"
+          >
             <User className="w-4 h-4" /> Профиль
           </button>
-          <button onClick={() => { navigate('/feed'); setShowMenu(false); }}
-            className="sidebar-item w-full text-left">
+          <button
+            onClick={() => { navigate('/feed'); setShowMenu(false); }}
+            className="sidebar-item w-full text-left"
+          >
             <Newspaper className="w-4 h-4" /> Лента
           </button>
           {(user as any)?.isAdmin && (
-            <button onClick={() => { navigate('/admin'); setShowMenu(false); }}
-              className="sidebar-item w-full text-left text-primary-400">
+            <button
+              onClick={() => { navigate('/admin'); setShowMenu(false); }}
+              className="sidebar-item w-full text-left text-primary-400"
+            >
               <Shield className="w-4 h-4" /> Администрирование
             </button>
           )}
@@ -116,15 +285,17 @@ export default function Sidebar({ onChatSelect }: SidebarProps) {
       )}
 
       {/* Stories strip */}
-      <StoryStrip />
+      <div className="shrink-0">
+        <StoryStrip />
+      </div>
 
       {/* Search */}
-      <div className="px-3 py-2">
+      <div className="px-3 py-2 shrink-0">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-500" />
           <input
             type="text"
-            placeholder="Поиск..."
+            placeholder="Поиск чатов, людей, сообщений..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full bg-dark-800/40 border-none rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder:text-dark-500 focus:outline-none focus:ring-1 focus:ring-primary-500/30"
@@ -132,80 +303,176 @@ export default function Sidebar({ onChatSelect }: SidebarProps) {
         </div>
       </div>
 
-      {/* Search results */}
-      {searchResults.length > 0 && (
-        <div className="px-3 mb-2">
-          <p className="text-xs text-dark-500 px-2 mb-1">Пользователи</p>
-          {searchResults.map((u: any) => (
+      {hasActiveSearch ? (
+        <div className="flex-1 overflow-y-auto px-2 pb-[calc(1rem+env(safe-area-inset-bottom))] md:pb-3">
+          {isSearching && (
+            <div className="px-3 py-2 text-xs text-dark-500">Ищем по xaxamax...</div>
+          )}
+
+          {filteredChats.length > 0 && (
+            <SearchSection title="Чаты">
+              {filteredChats.map((chat) => (
+                <button
+                  key={chat.id}
+                  onClick={() => handleChatClick(chat)}
+                  className={`sidebar-item w-full text-left mb-0.5 ${activeChat?.id === chat.id ? 'sidebar-item-active' : ''}`}
+                >
+                  <div className="relative flex-shrink-0">
+                    <div className="w-12 h-12 rounded-full bg-dark-700 flex items-center justify-center text-sm font-medium text-dark-300">
+                      {chat.avatar ? <img src={chat.avatar} className="w-full h-full rounded-full object-cover" alt="" /> : getInitials(chat.name || '?')}
+                    </div>
+                    {chat.isOnline && (
+                      <div className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-green-500 border-2 border-dark-950" />
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex justify-between items-baseline">
+                      <p className="text-sm font-medium text-white truncate">{chat.name || 'Без названия'}</p>
+                      {chat.lastMessage && (
+                        <span className="text-xs text-dark-500 flex-shrink-0 ml-2">
+                          {formatTime(chat.lastMessage.createdAt)}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-dark-400 truncate mt-0.5">
+                      {getChatPreview(chat)}
+                    </p>
+                  </div>
+                  {(unreadCounts.get(chat.id) || 0) > 0 && (
+                    <span className="shrink-0 ml-1 min-w-[20px] h-5 bg-primary-600 text-white text-[10px] font-bold rounded-full flex items-center justify-center px-1">
+                      {(unreadCounts.get(chat.id) || 0) > 99 ? '99+' : unreadCounts.get(chat.id)}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </SearchSection>
+          )}
+
+          {userResults.length > 0 && (
+            <SearchSection title="Пользователи">
+              {userResults.map((searchUser) => (
+                <button
+                  key={searchUser.id}
+                  onClick={() => handleUserClick(searchUser.id)}
+                  className="sidebar-item w-full text-left mb-0.5"
+                >
+                  <div className="w-10 h-10 rounded-full bg-primary-600/30 flex items-center justify-center text-sm font-medium text-primary-300 flex-shrink-0 overflow-hidden">
+                    {searchUser.avatar
+                      ? <img src={searchUser.avatar} className="w-full h-full rounded-full object-cover" alt="" />
+                      : getInitials(searchUser.displayName)}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-white truncate">{searchUser.displayName}</p>
+                    <p className="text-xs text-dark-400">{searchUser.phone}</p>
+                  </div>
+                  {searchUser.isOnline && <div className="w-2 h-2 rounded-full bg-green-500 ml-auto" />}
+                </button>
+              ))}
+            </SearchSection>
+          )}
+
+          {messageResults.length > 0 && (
+            <SearchSection title="Сообщения">
+              {messageResults.map((message) => (
+                <button
+                  key={`${message.chatId}-${message.id}`}
+                  onClick={() => handleMessageClick(message)}
+                  className="sidebar-item w-full text-left mb-0.5"
+                >
+                  <div className="w-10 h-10 rounded-full bg-dark-800 flex items-center justify-center text-sm font-medium text-dark-300 flex-shrink-0 overflow-hidden">
+                    {message.sender.avatar
+                      ? <img src={message.sender.avatar} className="w-full h-full rounded-full object-cover" alt="" />
+                      : getInitials(message.sender.displayName)}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <p className="text-sm font-medium text-white truncate">{getSearchChatName(message)}</p>
+                      <span className="text-[10px] text-dark-500 shrink-0">{formatTime(message.createdAt)}</span>
+                    </div>
+                    <p className="text-xs text-primary-400 truncate">{message.sender.displayName}</p>
+                    <p className="text-xs text-dark-400 truncate">{getMessagePreview(message)}</p>
+                  </div>
+                </button>
+              ))}
+            </SearchSection>
+          )}
+
+          {!isSearching && searchError && (
+            <div className="px-4 py-6 text-center text-sm text-red-400">
+              {searchError}
+            </div>
+          )}
+
+          {!isSearching && !searchError && !hasSearchResults && (
+            <div className="px-4 py-8 text-center">
+              <Search className="w-10 h-10 text-dark-600 mx-auto mb-2" />
+              <p className="text-dark-400 text-sm">Ничего не найдено</p>
+              <p className="text-dark-600 text-xs mt-1">Попробуй другое имя, номер или текст сообщения</p>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto px-2 pb-[calc(1rem+env(safe-area-inset-bottom))] md:pb-3">
+          {chats.length === 0 && (
+            <div className="text-center py-8">
+              <Users className="w-10 h-10 text-dark-600 mx-auto mb-2" />
+              <p className="text-dark-500 text-sm">Нет чатов</p>
+              <p className="text-dark-600 text-xs mt-1">Найдите пользователей в поиске</p>
+            </div>
+          )}
+          {chats.map((chat) => (
             <button
-              key={u.id}
-              onClick={() => handleUserClick(u.id)}
-              className="sidebar-item w-full text-left"
+              key={chat.id}
+              onClick={() => handleChatClick(chat)}
+              className={`sidebar-item w-full text-left mb-0.5 ${activeChat?.id === chat.id ? 'sidebar-item-active' : ''}`}
             >
-              <div className="w-10 h-10 rounded-full bg-primary-600/30 flex items-center justify-center text-sm font-medium text-primary-300 flex-shrink-0">
-                {u.avatar ? <img src={u.avatar} className="w-full h-full rounded-full object-cover" /> : getInitials(u.displayName)}
+              <div className="relative flex-shrink-0">
+                <div className="w-12 h-12 rounded-full bg-dark-700 flex items-center justify-center text-sm font-medium text-dark-300">
+                  {chat.avatar ? <img src={chat.avatar} className="w-full h-full rounded-full object-cover" alt="" /> : getInitials(chat.name || '?')}
+                </div>
+                {chat.isOnline && (
+                  <div className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-green-500 border-2 border-dark-950" />
+                )}
               </div>
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-white truncate">{u.displayName}</p>
-                <p className="text-xs text-dark-400">{u.phone}</p>
+              <div className="flex-1 min-w-0">
+                <div className="flex justify-between items-baseline">
+                  <p className="text-sm font-medium text-white truncate">{chat.name || 'Без названия'}</p>
+                  {chat.lastMessage && (
+                    <span className="text-xs text-dark-500 flex-shrink-0 ml-2">
+                      {formatTime(chat.lastMessage.createdAt)}
+                    </span>
+                  )}
+                </div>
+                {chat.lastMessage && (
+                  <p className="text-xs text-dark-400 truncate mt-0.5">
+                    {chat.type === 'GROUP' && <span className="text-dark-300">{chat.lastMessage.sender.displayName}: </span>}
+                    {getChatPreview(chat)}
+                  </p>
+                )}
               </div>
-              {u.isOnline && <div className="w-2 h-2 rounded-full bg-green-500 ml-auto" />}
+              {(unreadCounts.get(chat.id) || 0) > 0 && (
+                <span className="shrink-0 ml-1 min-w-[20px] h-5 bg-primary-600 text-white text-[10px] font-bold rounded-full flex items-center justify-center px-1">
+                  {(unreadCounts.get(chat.id) || 0) > 99 ? '99+' : unreadCounts.get(chat.id)}
+                </span>
+              )}
             </button>
           ))}
         </div>
       )}
 
-      {/* Chat list */}
-      <div className="flex-1 overflow-y-auto px-2">
-        {chats.length === 0 && !search && (
-          <div className="text-center py-8">
-            <Users className="w-10 h-10 text-dark-600 mx-auto mb-2" />
-            <p className="text-dark-500 text-sm">Нет чатов</p>
-            <p className="text-dark-600 text-xs mt-1">Найдите пользователей в поиске</p>
-          </div>
-        )}
-        {chats.map((chat) => (
-          <button
-            key={chat.id}
-            onClick={() => handleChatClick(chat)}
-            className={`sidebar-item w-full text-left mb-0.5 ${activeChat?.id === chat.id ? 'sidebar-item-active' : ''}`}
-          >
-            <div className="relative flex-shrink-0">
-              <div className="w-12 h-12 rounded-full bg-dark-700 flex items-center justify-center text-sm font-medium text-dark-300">
-                {chat.avatar ? <img src={chat.avatar} className="w-full h-full rounded-full object-cover" /> : getInitials(chat.name || '?')}
-              </div>
-              {chat.isOnline && (
-                <div className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-green-500 border-2 border-dark-950" />
-              )}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex justify-between items-baseline">
-                <p className="text-sm font-medium text-white truncate">{chat.name || 'Без названия'}</p>
-                {chat.lastMessage && (
-                  <span className="text-xs text-dark-500 flex-shrink-0 ml-2">
-                    {formatTime(chat.lastMessage.createdAt)}
-                  </span>
-                )}
-              </div>
-              {chat.lastMessage && (
-                <p className="text-xs text-dark-400 truncate mt-0.5">
-                  {chat.type === 'GROUP' && <span className="text-dark-300">{chat.lastMessage.sender.displayName}: </span>}
-                  {chat.lastMessage.text || (chat.lastMessage.type === 'IMAGE' ? '🖼 Фото' : chat.lastMessage.type === 'VOICE' ? '🎤 Голосовое' : '📎 Файл')}
-                </p>
-              )}
-            </div>
-            {(unreadCounts.get(chat.id) || 0) > 0 && (
-              <span className="shrink-0 ml-1 min-w-[20px] h-5 bg-primary-600 text-white text-[10px] font-bold rounded-full flex items-center justify-center px-1">
-                {(unreadCounts.get(chat.id) || 0) > 99 ? '99+' : unreadCounts.get(chat.id)}
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
       {/* Create group modal */}
       {showCreateGroup && (
         <CreateGroupModal onClose={() => setShowCreateGroup(false)} />
       )}
+    </div>
+  );
+}
+
+function SearchSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="mb-3">
+      <p className="text-[11px] uppercase tracking-[0.12em] text-dark-500 px-3 mb-1.5">{title}</p>
+      {children}
     </div>
   );
 }

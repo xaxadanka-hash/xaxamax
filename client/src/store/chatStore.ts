@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import api from '../services/api';
 import { getSocket } from '../services/socket';
+import { useAuthStore } from './authStore';
+import { filterHiddenMessages, hideMessageForUser, isMessageHiddenForUser } from '../utils/hiddenMessages';
 
 export interface ChatMessage {
   id: string;
@@ -72,6 +74,21 @@ interface ChatState {
   applyReaction: (messageId: string, userId: string, emoji: string, reacted: boolean) => void;
 }
 
+const maskHiddenLastMessage = (chat: Chat, currentUserId?: string | null): Chat => {
+  if (!chat.lastMessage || !isMessageHiddenForUser(chat.lastMessage.id, currentUserId)) {
+    return chat;
+  }
+
+  return {
+    ...chat,
+    lastMessage: {
+      ...chat.lastMessage,
+      text: 'Сообщение скрыто',
+      media: [],
+    },
+  };
+};
+
 export const useChatStore = create<ChatState>((set, get) => ({
   chats: [],
   activeChat: null,
@@ -89,7 +106,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ isLoadingChats: true });
     try {
       const { data } = await api.get('/chats');
-      set({ chats: data, isLoadingChats: false });
+      const currentUserId = useAuthStore.getState().user?.id;
+      set({
+        chats: (data as Chat[]).map((chat) => maskHiddenLastMessage(chat, currentUserId)),
+        isLoadingChats: false,
+      });
     } catch (err) {
       console.error('Fetch chats error:', err);
       set({ isLoadingChats: false });
@@ -110,7 +131,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ isLoadingMessages: true });
     try {
       const { data } = await api.get(`/messages/${chatId}`);
-      set({ messages: data.messages, isLoadingMessages: false, nextCursor: data.nextCursor, hasMore: !!data.nextCursor });
+      const currentUserId = useAuthStore.getState().user?.id;
+      const visibleMessages = filterHiddenMessages(data.messages as ChatMessage[], currentUserId);
+      set({
+        messages: visibleMessages,
+        isLoadingMessages: false,
+        nextCursor: data.nextCursor,
+        hasMore: !!data.nextCursor,
+      });
+      // Mark all unread messages as read
+      const unreadIds = visibleMessages
+        .filter(m => m.status !== 'READ' && m.senderId !== useAuthStore.getState().user?.id)
+        .map(m => m.id);
+      if (unreadIds.length > 0) {
+        const socket = getSocket();
+        socket?.emit('message:read', { chatId, messageIds: unreadIds });
+      }
     } catch (err) {
       console.error('Fetch messages error:', err);
       set({ isLoadingMessages: false });
@@ -123,8 +159,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ isLoadingMore: true });
     try {
       const { data } = await api.get(`/messages/${chatId}?cursor=${nextCursor}`);
+      const currentUserId = useAuthStore.getState().user?.id;
+      const visibleMessages = filterHiddenMessages(data.messages as ChatMessage[], currentUserId);
       set(state => ({
-        messages: [...data.messages, ...state.messages],
+        messages: [...visibleMessages, ...state.messages],
         nextCursor: data.nextCursor,
         hasMore: !!data.nextCursor,
         isLoadingMore: false,
@@ -142,12 +180,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   addMessage: (message) => {
     const { activeChat, chats } = get();
+    const currentUserId = useAuthStore.getState().user?.id;
+    const hasChatInList = chats.some((chat) => chat.id === message.chatId);
     if (activeChat && message.chatId === activeChat.id) {
       set({ messages: [...get().messages, message] });
-    } else {
+    } else if (message.senderId !== currentUserId) {
       // Increment unread for background chats (not sent by me)
       get().incrementUnread(message.chatId);
     }
+
+    if (!hasChatInList) {
+      void get().fetchChats();
+      return;
+    }
+
     // Update last message in chat list
     set({
       chats: chats.map((c) =>
@@ -159,16 +205,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
   createPrivateChat: async (userId) => {
     const { data } = await api.post('/chats/private', { userId });
     const { chats } = get();
+    const currentUserId = useAuthStore.getState().user?.id;
+    const normalizedChat = maskHiddenLastMessage(data as Chat, currentUserId);
     if (!chats.find((c) => c.id === data.id)) {
-      set({ chats: [data, ...chats] });
+      set({ chats: [normalizedChat, ...chats] });
     }
-    return data;
+    return normalizedChat;
   },
 
   createGroupChat: async (name, memberIds) => {
     const { data } = await api.post('/chats/group', { name, memberIds });
-    set({ chats: [data, ...get().chats] });
-    return data;
+    const currentUserId = useAuthStore.getState().user?.id;
+    const normalizedChat = maskHiddenLastMessage(data as Chat, currentUserId);
+    set({ chats: [normalizedChat, ...get().chats] });
+    return normalizedChat;
   },
 
   setTyping: (chatId, userId, isTyping) => {
@@ -206,25 +256,47 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({
       messages: get().messages.map((m) => (m.id === message.id ? { ...m, ...message } : m)),
     });
+    set({
+      chats: get().chats.map((chat) =>
+        chat.lastMessage?.id === message.id
+          ? { ...chat, lastMessage: { ...chat.lastMessage, ...message } }
+          : chat,
+      ),
+    });
   },
 
   applyDeletedMessage: (messageId, chatId, forAll, currentUserId) => {
-    set({
-      messages: get().messages.map((m) => {
-        if (m.id !== messageId) return m;
-        if (forAll || m.senderId === currentUserId) {
+    if (forAll) {
+      set({
+        messages: get().messages.map((m) => {
+          if (m.id !== messageId) return m;
           return { ...m, text: null, deletedForAll: true, deletedAt: new Date().toISOString() } as any;
-        }
-        return m;
-      }),
-    });
-    // Remove from chat list last message if needed
-    const { chats } = get();
+        }),
+      });
+      set({
+        chats: get().chats.map((chat) =>
+          chat.id === chatId && chat.lastMessage?.id === messageId
+            ? { ...chat, lastMessage: { ...chat.lastMessage, text: 'Сообщение удалено' } }
+            : chat,
+        ),
+      });
+      return;
+    }
+
+    hideMessageForUser(messageId, currentUserId);
     set({
-      chats: chats.map((c) =>
-        c.id === chatId && c.lastMessage?.id === messageId
-          ? { ...c, lastMessage: { ...c.lastMessage, text: 'Сообщение удалено' } }
-          : c
+      messages: get().messages.filter((message) => message.id !== messageId),
+      chats: get().chats.map((chat) =>
+        chat.id === chatId && chat.lastMessage?.id === messageId
+          ? {
+            ...chat,
+            lastMessage: {
+              ...chat.lastMessage,
+              text: 'Сообщение скрыто',
+              media: [],
+            },
+          }
+          : chat,
       ),
     });
   },

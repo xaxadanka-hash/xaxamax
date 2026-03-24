@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Search, X, Star, Film } from 'lucide-react';
+import api from '../../services/api';
 
-const TMDB_API_KEY = import.meta.env.VITE_TMDB_API_KEY || '695e5a3fa31e22b3da8264e1efdb7aa2';
-const TMDB_BASE = 'https://api.themoviedb.org/3';
 const IMG_BASE = 'https://image.tmdb.org/t/p/w342';
 
 export interface TmdbMovie {
@@ -27,15 +26,21 @@ export default function MovieSearch({ onSelect, onClose }: MovieSearchProps) {
   const [results, setResults] = useState<TmdbMovie[]>([]);
   const [popular, setPopular] = useState<TmdbMovie[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load popular movies on mount
   useEffect(() => {
-    fetch(`${TMDB_BASE}/movie/popular?api_key=${TMDB_API_KEY}&language=ru-RU&page=1`)
-      .then((r) => r.json())
-      .then((d) => setPopular(d.results || []))
-      .catch(() => {});
+    api.get('/movies/popular')
+      .then(({ data }) => {
+        setPopular(data.results || []);
+        setError(null);
+      })
+      .catch((err) => {
+        console.error('Load popular movies error:', err);
+        setError('Не удалось загрузить каталог фильмов');
+      });
     inputRef.current?.focus();
   }, []);
 
@@ -44,17 +49,25 @@ export default function MovieSearch({ onSelect, onClose }: MovieSearchProps) {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (!query.trim()) {
       setResults([]);
+      setError(null);
       return;
     }
     setLoading(true);
+    setError(null);
     debounceRef.current = setTimeout(() => {
-      fetch(`${TMDB_BASE}/search/movie?api_key=${TMDB_API_KEY}&language=ru-RU&query=${encodeURIComponent(query)}&page=1`)
-        .then((r) => r.json())
-        .then((d) => {
-          setResults(d.results || []);
+      api.get('/movies/search', {
+        params: { q: query },
+      })
+        .then(({ data }) => {
+          setResults(data.results || []);
           setLoading(false);
         })
-        .catch(() => setLoading(false));
+        .catch((err) => {
+          console.error('Search movies error:', err);
+          setResults([]);
+          setError('Не удалось выполнить поиск фильмов');
+          setLoading(false);
+        });
     }, 400);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [query]);
@@ -96,6 +109,9 @@ export default function MovieSearch({ onSelect, onClose }: MovieSearchProps) {
       <div className="flex-1 overflow-y-auto px-4 pb-4">
         <p className="text-sm text-dark-400 mb-3">{title}</p>
         {loading && <p className="text-center text-dark-500 py-8">Поиск...</p>}
+        {!loading && error && (
+          <p className="text-center text-red-400 py-8">{error}</p>
+        )}
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
           {movies.map((movie) => (
             <button
@@ -130,7 +146,7 @@ export default function MovieSearch({ onSelect, onClose }: MovieSearchProps) {
             </button>
           ))}
         </div>
-        {!loading && movies.length === 0 && query.trim() && (
+        {!loading && !error && movies.length === 0 && query.trim() && (
           <p className="text-center text-dark-500 py-8">Ничего не найдено</p>
         )}
       </div>

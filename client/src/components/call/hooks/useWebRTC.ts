@@ -1,4 +1,5 @@
 import { useRef, useCallback } from 'react';
+import { SOCKET_EVENTS } from '@xaxamax/shared/socket-events';
 import { getSocket } from '../../../services/socket';
 
 // ─── ICE CONFIG ───────────────────────────────────────────────
@@ -32,6 +33,7 @@ export interface PeerState {
   pc: RTCPeerConnection;
   peerId: string;
   isCaller: boolean;
+  signalMode: 'direct' | 'group';
   iceCandidateQueue: RTCIceCandidateInit[];
   makingOffer: boolean;
   isNegotiating: boolean;
@@ -65,11 +67,28 @@ export function useWebRTC(callbacks: UseWebRTCCallbacks) {
   const peersRef = useRef<Map<string, PeerState>>(new Map());
   const endedRef = useRef(false);
 
+  const getSignalEvents = (signalMode: 'direct' | 'group') => {
+    if (signalMode === 'group') {
+      return {
+        offer: SOCKET_EVENTS.groupCall.offer,
+        answer: SOCKET_EVENTS.groupCall.answer,
+        iceCandidate: SOCKET_EVENTS.groupCall.iceCandidate,
+      };
+    }
+
+    return {
+      offer: SOCKET_EVENTS.webrtc.offer,
+      answer: SOCKET_EVENTS.webrtc.answer,
+      iceCandidate: SOCKET_EVENTS.webrtc.iceCandidate,
+    };
+  };
+
   // ─── CREATE PEER CONNECTION ─────────────────────────────────
   const createPeer = useCallback((
     peerId: string,
     isCaller: boolean,
     localStream: MediaStream | null,
+    signalMode: 'direct' | 'group' = 'direct',
   ): PeerState => {
     // Close existing peer if any
     const existing = peersRef.current.get(peerId);
@@ -84,6 +103,7 @@ export function useWebRTC(callbacks: UseWebRTCCallbacks) {
       pc,
       peerId,
       isCaller,
+      signalMode,
       iceCandidateQueue: [],
       makingOffer: false,
       isNegotiating: false,
@@ -98,7 +118,15 @@ export function useWebRTC(callbacks: UseWebRTCCallbacks) {
     // ── ICE CANDIDATE ──
     pc.onicecandidate = (e) => {
       if (!e.candidate?.candidate) return;
-      socket?.emit('webrtc:ice-candidate', {
+      const signalEvents = getSignalEvents(peer.signalMode);
+      if (peer.signalMode === 'group') {
+        socket?.emit(signalEvents.iceCandidate, {
+          targetUserId: peerId,
+          candidate: e.candidate.toJSON(),
+        });
+        return;
+      }
+      socket?.emit(signalEvents.iceCandidate, {
         callId: callbacks.getCallId(),
         targetUserId: peerId,
         candidate: e.candidate.toJSON(),
@@ -151,11 +179,19 @@ export function useWebRTC(callbacks: UseWebRTCCallbacks) {
           }
           await pc.setLocalDescription(offer);
           log(`Sending offer to ${peerId}`);
-          socket?.emit('webrtc:offer', {
-            callId: callbacks.getCallId(),
-            targetUserId: peerId,
-            offer: pc.localDescription,
-          });
+          const signalEvents = getSignalEvents(peer.signalMode);
+          if (peer.signalMode === 'group') {
+            socket?.emit(signalEvents.offer, {
+              targetUserId: peerId,
+              offer: pc.localDescription,
+            });
+          } else {
+            socket?.emit(signalEvents.offer, {
+              callId: callbacks.getCallId(),
+              targetUserId: peerId,
+              offer: pc.localDescription,
+            });
+          }
         } catch (err) {
           logErr('onnegotiationneeded error:', err);
         } finally {
@@ -253,11 +289,19 @@ export function useWebRTC(callbacks: UseWebRTCCallbacks) {
             const offer = await pc.createOffer();
             if (endedRef.current || !pcRef(peer)) return;
             await pc.setLocalDescription(offer);
-            socket?.emit('webrtc:offer', {
-              callId: callbacks.getCallId(),
-              targetUserId: peerId,
-              offer: pc.localDescription,
-            });
+            const signalEvents = getSignalEvents(peer.signalMode);
+            if (peer.signalMode === 'group') {
+              socket?.emit(signalEvents.offer, {
+                targetUserId: peerId,
+                offer: pc.localDescription,
+              });
+            } else {
+              socket?.emit(signalEvents.offer, {
+                callId: callbacks.getCallId(),
+                targetUserId: peerId,
+                offer: pc.localDescription,
+              });
+            }
           } catch (err) {
             logErr('Fallback offer error:', err);
           }
@@ -303,11 +347,19 @@ export function useWebRTC(callbacks: UseWebRTCCallbacks) {
       await pc.setLocalDescription(answer);
 
       log(`Sending answer to ${peerId}`);
-      socket?.emit('webrtc:answer', {
-        callId: callbacks.getCallId(),
-        targetUserId: peerId,
-        answer: pc.localDescription,
-      });
+      const signalEvents = getSignalEvents(peer.signalMode);
+      if (peer.signalMode === 'group') {
+        socket?.emit(signalEvents.answer, {
+          targetUserId: peerId,
+          answer: pc.localDescription,
+        });
+      } else {
+        socket?.emit(signalEvents.answer, {
+          callId: callbacks.getCallId(),
+          targetUserId: peerId,
+          answer: pc.localDescription,
+        });
+      }
 
       // Flush queued ICE candidates
       await flushIceCandidates(peer);
@@ -379,6 +431,7 @@ export function useWebRTC(callbacks: UseWebRTCCallbacks) {
     oldTrack: MediaStreamTrack | null,
     newTrack: MediaStreamTrack,
   ) => {
+    let replacedCount = 0;
     for (const [, peer] of peersRef.current) {
       const sender = peer.pc.getSenders().find((s) =>
         s.track?.kind === newTrack.kind && (oldTrack ? s.track?.id === oldTrack.id : true)
@@ -386,11 +439,13 @@ export function useWebRTC(callbacks: UseWebRTCCallbacks) {
       if (sender) {
         try {
           await sender.replaceTrack(newTrack);
+          replacedCount++;
         } catch (err) {
           logErr(`replaceTrack error for ${peer.peerId}:`, err);
         }
       }
     }
+    return replacedCount;
   }, []);
 
   // ─── ADD TRACK TO ALL PEERS ────────────────────────────────
@@ -400,6 +455,22 @@ export function useWebRTC(callbacks: UseWebRTCCallbacks) {
         peer.pc.addTrack(track, stream);
       } catch (err) {
         logErr(`addTrack error for ${peer.peerId}:`, err);
+      }
+    }
+  }, []);
+
+  // ─── REMOVE TRACK FROM ALL PEERS ──────────────────────────
+  const removeTrackFromAll = useCallback((track: MediaStreamTrack | null) => {
+    if (!track) return;
+
+    for (const [, peer] of peersRef.current) {
+      const sender = peer.pc.getSenders().find((s) => s.track?.id === track.id);
+      if (!sender) continue;
+
+      try {
+        peer.pc.removeTrack(sender);
+      } catch (err) {
+        logErr(`removeTrack error for ${peer.peerId}:`, err);
       }
     }
   }, []);
@@ -456,6 +527,7 @@ export function useWebRTC(callbacks: UseWebRTCCallbacks) {
     handleIceCandidate,
     replaceTrackOnAll,
     addTrackToAll,
+    removeTrackFromAll,
     closePeer,
     closeAll,
     resetEnded,

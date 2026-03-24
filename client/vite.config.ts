@@ -14,13 +14,27 @@ export default defineConfig({
   build: {
     rollupOptions: {
       output: {
-        manualChunks: {
-          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
-          'motion': ['framer-motion'],
-          'date': ['date-fns'],
-          'icons': ['lucide-react'],
-          'state': ['zustand'],
-          'socket': ['socket.io-client'],
+        manualChunks(id) {
+          if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/') || id.includes('node_modules/react-router-dom/')) {
+            return 'react-vendor';
+          }
+          if (id.includes('node_modules/framer-motion/')) {
+            return 'motion';
+          }
+          if (id.includes('node_modules/date-fns/')) {
+            return 'date';
+          }
+          if (id.includes('node_modules/lucide-react/')) {
+            return 'icons';
+          }
+          if (id.includes('node_modules/zustand/')) {
+            return 'state';
+          }
+          if (id.includes('node_modules/socket.io-client/')) {
+            return 'socket';
+          }
+
+          return undefined;
         },
       },
     },

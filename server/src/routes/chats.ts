@@ -1,8 +1,21 @@
 import { Router, Response } from 'express';
-import { prisma } from '../index';
+import { prisma } from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth';
 
 const router = Router();
+
+function formatChatForUser(chat: any, currentUserId: string) {
+  const otherMembers = chat.members.filter((member: any) => member.userId !== currentUserId);
+  const lastMessage = chat.messages?.[0] || null;
+
+  return {
+    ...chat,
+    name: chat.type === 'PRIVATE' ? otherMembers[0]?.user.displayName || chat.name : chat.name,
+    avatar: chat.type === 'PRIVATE' ? otherMembers[0]?.user.avatar || chat.avatar : chat.avatar,
+    isOnline: chat.type === 'PRIVATE' ? otherMembers[0]?.user.isOnline : undefined,
+    lastMessage,
+  };
+}
 
 // Get all chats for current user
 router.get('/', async (req: AuthRequest, res: Response) => {
@@ -26,17 +39,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       orderBy: { updatedAt: 'desc' },
     });
 
-    const formatted = chats.map((chat) => {
-      const otherMembers = chat.members.filter((m) => m.userId !== req.userId);
-      const lastMessage = chat.messages[0] || null;
-      return {
-        ...chat,
-        name: chat.type === 'PRIVATE' ? otherMembers[0]?.user.displayName : chat.name,
-        avatar: chat.type === 'PRIVATE' ? otherMembers[0]?.user.avatar : chat.avatar,
-        isOnline: chat.type === 'PRIVATE' ? otherMembers[0]?.user.isOnline : undefined,
-        lastMessage,
-      };
-    });
+    const formatted = chats.map((chat) => formatChatForUser(chat, req.userId!));
 
     res.json(formatted);
   } catch (err) {
@@ -66,10 +69,17 @@ router.post('/private', async (req: AuthRequest, res: Response) => {
             user: { select: { id: true, displayName: true, avatar: true, isOnline: true, lastSeen: true } },
           },
         },
+        messages: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          include: {
+            sender: { select: { id: true, displayName: true } },
+          },
+        },
       },
     });
 
-    if (existing) return res.json(existing);
+    if (existing) return res.json(formatChatForUser(existing, req.userId!));
 
     const chat = await prisma.chat.create({
       data: {
@@ -87,10 +97,17 @@ router.post('/private', async (req: AuthRequest, res: Response) => {
             user: { select: { id: true, displayName: true, avatar: true, isOnline: true, lastSeen: true } },
           },
         },
+        messages: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          include: {
+            sender: { select: { id: true, displayName: true } },
+          },
+        },
       },
     });
 
-    res.json(chat);
+    res.json(formatChatForUser(chat, req.userId!));
   } catch (err) {
     console.error('Create private chat error:', err);
     res.status(500).json({ error: 'Ошибка сервера' });
@@ -122,10 +139,17 @@ router.post('/group', async (req: AuthRequest, res: Response) => {
             user: { select: { id: true, displayName: true, avatar: true, isOnline: true, lastSeen: true } },
           },
         },
+        messages: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          include: {
+            sender: { select: { id: true, displayName: true } },
+          },
+        },
       },
     });
 
-    res.json(chat);
+    res.json(formatChatForUser(chat, req.userId!));
   } catch (err) {
     console.error('Create group chat error:', err);
     res.status(500).json({ error: 'Ошибка сервера' });
@@ -146,11 +170,18 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
             user: { select: { id: true, displayName: true, avatar: true, isOnline: true, lastSeen: true, bio: true } },
           },
         },
+        messages: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          include: {
+            sender: { select: { id: true, displayName: true } },
+          },
+        },
       },
     });
 
     if (!chat) return res.status(404).json({ error: 'Чат не найден' });
-    res.json(chat);
+    res.json(formatChatForUser(chat, req.userId!));
   } catch (err) {
     console.error('Get chat error:', err);
     res.status(500).json({ error: 'Ошибка сервера' });

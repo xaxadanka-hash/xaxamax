@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { SOCKET_EVENTS } from '@xaxamax/shared/socket-events';
 import api from '../services/api';
 import { getSocket } from '../services/socket';
 
@@ -114,7 +115,7 @@ export const useChannelStore = create<ChannelState>((set, get) => ({
     const { data } = await api.post(`/channels/${slug}/posts`, { text, mediaIds });
     // Broadcast via socket so other subscribers get it too
     const socket = getSocket();
-    socket?.emit('channel:post', { channelId: data.post.channelId, post: data.post });
+    socket?.emit(SOCKET_EVENTS.channel.post, { channelId: data.post.channelId, post: data.post });
     set(state => ({ posts: [...state.posts, data.post] }));
   },
 

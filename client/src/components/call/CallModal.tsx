@@ -26,11 +26,12 @@ export default function CallModal() {
     callDuration,
     media,
     watchTogether,
-    answerCall,
+    acceptIncomingCall,
     hangUp,
     rejectCall,
     startScreenShare,
     stopScreenShare,
+    toggleVideo,
     selectMovie,
     stopMovie,
     toggleMovieSearch,
@@ -43,13 +44,16 @@ export default function CallModal() {
   const firstRemoteStream = call.remoteUserId
     ? call.remoteStreams.get(call.remoteUserId) || null
     : call.remoteStreams.values().next().value || null;
+  const localHasVideo = !!media.localStreamRef.current?.getVideoTracks().length;
+  const remoteHasVideoTrack = !!firstRemoteStream?.getVideoTracks().length;
+  const screenHasVideo = !!media.screenStreamRef.current?.getVideoTracks().length;
+  const showVideo = call.type !== 'AUDIO' || localHasVideo || remoteHasVideoTrack || screenHasVideo;
 
   // ─── RENDER ─────────────────────────────────────────────────
   if (call.mode === 'IDLE') return null;
 
   const isConnected = call.mode === 'CONNECTED';
   const isIncoming = call.isIncoming && call.mode === 'RINGING';
-  const showVideo = call.type !== 'AUDIO';
   const isWatching = !!watchTogether.movie;
 
   return (
@@ -153,7 +157,7 @@ export default function CallModal() {
           </div>
           <div className="flex flex-col items-center gap-2">
             <button
-              onClick={answerCall}
+              onClick={acceptIncomingCall}
               className="w-16 h-16 rounded-full bg-green-500 flex items-center justify-center hover:bg-green-600 transition-colors animate-pulse shadow-lg shadow-green-500/30"
             >
               <Phone className="w-7 h-7 text-white" />
@@ -172,7 +176,7 @@ export default function CallModal() {
           isFullscreen={isFullscreen}
           showMovieButton={isConnected}
           onToggleMute={media.toggleMute}
-          onToggleVideo={media.toggleVideo}
+          onToggleVideo={toggleVideo}
           onToggleScreenShare={media.isScreenSharing ? stopScreenShare : startScreenShare}
           onToggleFullscreen={() => setIsFullscreen(f => !f)}
           onToggleMovieSearch={toggleMovieSearch}

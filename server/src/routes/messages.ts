@@ -1,8 +1,51 @@
 import { Router, Response } from 'express';
-import { prisma } from '../index';
+import { prisma } from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth';
+import { messageInclude, messageSearchInclude } from '../lib/messageInclude';
 
 const router = Router();
+
+const searchMessages = async (req: AuthRequest, res: Response) => {
+  try {
+    const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    const chatId = typeof req.query.chatId === 'string' ? req.query.chatId : undefined;
+    const requestedLimit = Number.parseInt(req.query.limit as string, 10);
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.min(Math.max(requestedLimit, 1), 100)
+      : 30;
+
+    if (!query) {
+      return res.json({ messages: [] });
+    }
+
+    const messages = await prisma.message.findMany({
+      where: {
+        text: { contains: query, mode: 'insensitive' },
+        deletedAt: null,
+        chat: chatId
+          ? {
+            id: chatId,
+            members: { some: { userId: req.userId } },
+          }
+          : {
+            members: { some: { userId: req.userId } },
+          },
+      },
+      include: messageSearchInclude,
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
+
+    return res.json({ messages });
+  } catch (err) {
+    console.error('Search messages error:', err);
+    return res.status(500).json({ error: 'Ошибка сервера' });
+  }
+};
+
+// Search messages
+router.get('/search', searchMessages);
+router.get('/search/all', searchMessages);
 
 // Get messages for a chat (paginated)
 router.get('/:chatId', async (req: AuthRequest, res: Response) => {
@@ -17,18 +60,17 @@ router.get('/:chatId', async (req: AuthRequest, res: Response) => {
     if (!member) return res.status(403).json({ error: 'Нет доступа к этому чату' });
 
     const messages = await prisma.message.findMany({
-      where: { chatId, deletedAt: null },
+      where: {
+        chatId,
+        OR: [
+          { deletedAt: null },
+          { deletedForAll: true },
+        ],
+      },
       orderBy: { createdAt: 'desc' },
       take: limit,
       ...(cursor && { cursor: { id: cursor }, skip: 1 }),
-      include: {
-        sender: { select: { id: true, displayName: true, avatar: true } },
-        replyTo: {
-          include: { sender: { select: { id: true, displayName: true } } },
-        },
-        media: true,
-        reactions: true,
-      },
+      include: messageInclude,
     });
 
     res.json({
@@ -54,11 +96,7 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
     const updated = await prisma.message.update({
       where: { id },
       data: { text: text.trim(), editedAt: new Date() },
-      include: {
-        sender: { select: { id: true, displayName: true, avatar: true } },
-        replyTo: { include: { sender: { select: { id: true, displayName: true } } } },
-        media: true,
-      },
+      include: messageInclude,
     });
     res.json(updated);
   } catch (err) {
@@ -77,11 +115,15 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
     if (msg.senderId !== req.userId) return res.status(403).json({ error: 'Нет доступа' });
 
     const deleteForAll = forAll === 'true';
+    if (!deleteForAll) {
+      return res.json({ success: true, messageId: id, chatId: msg.chatId, forAll: false, localOnly: true });
+    }
+
     await prisma.message.update({
       where: { id },
       data: {
         deletedAt: new Date(),
-        deletedForAll: deleteForAll,
+        deletedForAll: true,
       },
     });
     res.json({ success: true, messageId: id, chatId: msg.chatId, forAll: deleteForAll });
@@ -117,12 +159,7 @@ router.post('/:id/forward', async (req: AuthRequest, res: Response) => {
           media: { connect: original.media.map((m: { id: string }) => ({ id: m.id })) },
         }),
       },
-      include: {
-        sender: { select: { id: true, displayName: true, avatar: true } },
-        replyTo: { include: { sender: { select: { id: true, displayName: true } } } },
-        forwardedFrom: { include: { sender: { select: { id: true, displayName: true } } } },
-        media: true,
-      },
+      include: messageInclude,
     });
 
     await prisma.chat.update({ where: { id: targetChatId }, data: { updatedAt: new Date() } });
@@ -172,33 +209,6 @@ router.post('/:chatId/read', async (req: AuthRequest, res: Response) => {
     res.json({ success: true });
   } catch (err) {
     console.error('Mark read error:', err);
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
-});
-
-// Search messages
-router.get('/search/all', async (req: AuthRequest, res: Response) => {
-  try {
-    const { q } = req.query;
-    if (!q || typeof q !== 'string') return res.json([]);
-
-    const messages = await prisma.message.findMany({
-      where: {
-        text: { contains: q, mode: 'insensitive' },
-        chat: { members: { some: { userId: req.userId } } },
-        deletedAt: null,
-      },
-      include: {
-        sender: { select: { id: true, displayName: true, avatar: true } },
-        chat: { select: { id: true, name: true, type: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 30,
-    });
-
-    res.json(messages);
-  } catch (err) {
-    console.error('Search messages error:', err);
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });

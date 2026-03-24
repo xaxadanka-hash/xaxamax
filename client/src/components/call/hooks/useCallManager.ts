@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { SOCKET_EVENTS } from '@xaxamax/shared/socket-events';
 import { getSocket } from '../../../services/socket';
 import { useAuthStore } from '../../../store/authStore';
 import { useWebRTC } from './useWebRTC';
@@ -62,12 +63,23 @@ export function useCallManager() {
 
   const callRef = useRef<CallState>({ ...EMPTY_CALL });
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const screenVideoTrackRef = useRef<MediaStreamTrack | null>(null);
+  const screenAudioTrackRef = useRef<MediaStreamTrack | null>(null);
+  const screenShareUsedReplaceRef = useRef(false);
+  const isStoppingScreenShareRef = useRef(false);
 
   // Keep ref in sync
   useEffect(() => { callRef.current = call; }, [call]);
 
   // ─── MEDIA STREAMS ──────────────────────────────────────────
   const media = useMediaStreams();
+
+  const resetScreenShareState = useCallback(() => {
+    screenVideoTrackRef.current = null;
+    screenAudioTrackRef.current = null;
+    screenShareUsedReplaceRef.current = false;
+    isStoppingScreenShareRef.current = false;
+  }, []);
 
   // ─── WEBRTC CALLBACKS ───────────────────────────────────────
   const webrtcCallbacks = useRef({
@@ -108,15 +120,45 @@ export function useCallManager() {
 
   const webrtc = useWebRTC(webrtcCallbacks);
 
+  const finishScreenShare = useCallback(async (reason: 'manual' | 'browser-ui' = 'manual') => {
+    if (isStoppingScreenShareRef.current) return;
+    isStoppingScreenShareRef.current = true;
+
+    try {
+      const screenVideoTrack = screenVideoTrackRef.current;
+      const screenAudioTrack = screenAudioTrackRef.current;
+      const cameraVideoTrack = media.localStreamRef.current?.getVideoTracks()[0] || null;
+
+      if (screenVideoTrack) {
+        if (screenShareUsedReplaceRef.current && cameraVideoTrack) {
+          await webrtc.replaceTrackOnAll(screenVideoTrack, cameraVideoTrack);
+        } else {
+          webrtc.removeTrackFromAll(screenVideoTrack);
+        }
+      }
+
+      if (screenAudioTrack) {
+        webrtc.removeTrackFromAll(screenAudioTrack);
+      }
+
+      media.stopScreenShare();
+      log(`Screen share stopped (${reason})`);
+    } finally {
+      resetScreenShareState();
+    }
+  }, [media, resetScreenShareState, webrtc]);
+
   // ─── CLEANUP ────────────────────────────────────────────────
   const cleanup = useCallback(() => {
+    media.setOnScreenShareEnded(null);
+    resetScreenShareState();
     webrtc.closeAll();
     media.stopAllMedia();
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     setCallDuration(0);
     setWatchTogether({ movie: null, showSearch: false });
     setCall({ ...EMPTY_CALL });
-  }, [webrtc, media]);
+  }, [media, resetScreenShareState, webrtc]);
 
   // ─── HANDLE PEER GONE ──────────────────────────────────────
   const handlePeerGone = useCallback((peerId: string) => {
@@ -145,16 +187,26 @@ export function useCallManager() {
   }, [webrtc, cleanup]);
 
   // ─── END CALL ──────────────────────────────────────────────
-  const endCall = useCallback((event: 'call:end' | 'call:decline' = 'call:end') => {
+  const endCall = useCallback((event: typeof SOCKET_EVENTS.call.end | typeof SOCKET_EVENTS.call.decline = SOCKET_EVENTS.call.end) => {
     const socket = getSocket();
     const c = callRef.current;
     if (c.callId) socket?.emit(event, { callId: c.callId });
-    if (c.isGroup && c.groupRoomId) socket?.emit('group:leave', { roomId: c.groupRoomId });
+    if (c.isGroup && c.groupRoomId) socket?.emit(SOCKET_EVENTS.groupCall.leave, { roomId: c.groupRoomId });
     cleanup();
   }, [cleanup]);
 
-  const hangUp = useCallback(() => endCall('call:end'), [endCall]);
-  const rejectCall = useCallback(() => endCall('call:decline'), [endCall]);
+  const hangUp = useCallback(() => endCall(SOCKET_EVENTS.call.end), [endCall]);
+  const rejectCall = useCallback(() => endCall(SOCKET_EVENTS.call.decline), [endCall]);
+
+  useEffect(() => {
+    media.setOnScreenShareEnded(() => {
+      void finishScreenShare('browser-ui');
+    });
+
+    return () => {
+      media.setOnScreenShareEnded(null);
+    };
+  }, [finishScreenShare, media]);
 
   // ─── SCREEN SHARE (replaceTrack pattern) ───────────────────
   const startScreenShare = useCallback(async () => {
@@ -164,13 +216,24 @@ export function useCallManager() {
     const screenVideoTrack = screenStream.getVideoTracks()[0];
     if (!screenVideoTrack) return;
 
-    // Replace video track on all peers (no renegotiation needed!)
+    screenVideoTrackRef.current = screenVideoTrack;
+    screenAudioTrackRef.current = null;
+    screenShareUsedReplaceRef.current = false;
+
     const localVideoTrack = media.localStreamRef.current?.getVideoTracks()[0] || null;
-    await webrtc.replaceTrackOnAll(localVideoTrack, screenVideoTrack);
+    if (localVideoTrack) {
+      const replacedCount = await webrtc.replaceTrackOnAll(localVideoTrack, screenVideoTrack);
+      screenShareUsedReplaceRef.current = replacedCount > 0;
+    }
+
+    if (!screenShareUsedReplaceRef.current) {
+      webrtc.addTrackToAll(screenVideoTrack, screenStream);
+    }
 
     // If screen has audio, add it as separate track
     const screenAudioTrack = screenStream.getAudioTracks()[0];
-    if (screenAudioTrack && media.localStreamRef.current) {
+    if (screenAudioTrack) {
+      screenAudioTrackRef.current = screenAudioTrack;
       webrtc.addTrackToAll(screenAudioTrack, screenStream);
     }
 
@@ -178,13 +241,25 @@ export function useCallManager() {
   }, [media, webrtc]);
 
   const stopScreenShare = useCallback(async () => {
-    // Restore camera video track
-    const cameraVideoTrack = media.localStreamRef.current?.getVideoTracks()[0];
-    if (cameraVideoTrack) {
-      await webrtc.replaceTrackOnAll(null, cameraVideoTrack);
+    await finishScreenShare('manual');
+  }, [finishScreenShare]);
+
+  const toggleVideo = useCallback(async () => {
+    const previousTrackCount = media.localStreamRef.current?.getVideoTracks().length || 0;
+    await media.toggleVideo();
+
+    const localStream = media.localStreamRef.current;
+    const currentVideoTracks = localStream?.getVideoTracks() || [];
+    const addedVideoTrack = previousTrackCount === 0 ? currentVideoTracks[0] : null;
+
+    if (localStream && addedVideoTrack) {
+      webrtc.addTrackToAll(addedVideoTrack, localStream);
+      setCall(prev => ({
+        ...prev,
+        type: prev.type === 'AUDIO' ? 'VIDEO' : prev.type,
+      }));
+      log('Video upgraded from audio-only call');
     }
-    media.stopScreenShare();
-    log('Screen share stopped');
   }, [media, webrtc]);
 
   // ─── WATCH TOGETHER ────────────────────────────────────────
@@ -193,12 +268,12 @@ export function useCallManager() {
     const socket = getSocket();
     const c = callRef.current;
     if (c.callId && c.remoteUserId) {
-      socket?.emit('movie:select', { callId: c.callId, targetUserId: c.remoteUserId, movie });
+      socket?.emit(SOCKET_EVENTS.watchTogether.selectMovie, { callId: c.callId, targetUserId: c.remoteUserId, movie });
     }
     // For group calls, broadcast to all participants
     if (c.isGroup && c.groupRoomId) {
       for (const [peerId] of c.participants) {
-        socket?.emit('movie:select', { callId: c.callId, targetUserId: peerId, movie });
+        socket?.emit(SOCKET_EVENTS.watchTogether.selectMovie, { callId: c.callId, targetUserId: peerId, movie });
       }
     }
   }, []);
@@ -208,11 +283,11 @@ export function useCallManager() {
     const socket = getSocket();
     const c = callRef.current;
     if (c.callId && c.remoteUserId) {
-      socket?.emit('movie:stop', { callId: c.callId, targetUserId: c.remoteUserId });
+      socket?.emit(SOCKET_EVENTS.watchTogether.stopMovie, { callId: c.callId, targetUserId: c.remoteUserId });
     }
     if (c.isGroup && c.groupRoomId) {
       for (const [peerId] of c.participants) {
-        socket?.emit('movie:stop', { callId: c.callId, targetUserId: peerId });
+        socket?.emit(SOCKET_EVENTS.watchTogether.stopMovie, { callId: c.callId, targetUserId: peerId });
       }
     }
   }, []);
@@ -233,7 +308,7 @@ export function useCallManager() {
       remoteUser,
     });
     const socket = getSocket();
-    socket?.emit('call:initiate', { targetUserId, type });
+    socket?.emit(SOCKET_EVENTS.call.initiate, { targetUserId, type });
   }, [webrtc]);
 
   // ─── ANSWER INCOMING CALL ─────────────────────────────────
@@ -246,11 +321,11 @@ export function useCallManager() {
     if (!stream) return;
 
     // Create PC as callee (polite peer)
-    webrtc.createPeer(c.remoteUserId, false, stream);
+    webrtc.createPeer(c.remoteUserId, false, stream, 'direct');
 
     setCall(prev => ({ ...prev, isIncoming: false, mode: 'CONNECTING' }));
     const socket = getSocket();
-    socket?.emit('call:accept', { callId: c.callId });
+    socket?.emit(SOCKET_EVENTS.call.accept, { callId: c.callId });
   }, [webrtc, media]);
 
   // ─── INITIATE GROUP CALL ───────────────────────────────────
@@ -269,7 +344,7 @@ export function useCallManager() {
     });
 
     const socket = getSocket();
-    socket?.emit('group:create', { chatId, memberIds });
+    socket?.emit(SOCKET_EVENTS.groupCall.create, { chatId, memberIds });
   }, [webrtc]);
 
   // ─── JOIN GROUP CALL ───────────────────────────────────────
@@ -281,13 +356,23 @@ export function useCallManager() {
     setCall(prev => ({
       ...prev,
       mode: 'CONNECTING',
+      isIncoming: false,
       isGroup: true,
       groupRoomId: roomId,
     }));
 
     const socket = getSocket();
-    socket?.emit('group:join', { roomId });
+    socket?.emit(SOCKET_EVENTS.groupCall.join, { roomId });
   }, [webrtc, media]);
+
+  const acceptIncomingCall = useCallback(async () => {
+    const c = callRef.current;
+    if (c.isGroup && c.groupRoomId) {
+      await joinGroupCall(c.groupRoomId);
+      return;
+    }
+    await answerCall();
+  }, [answerCall, joinGroupCall]);
 
   // ─── SOCKET EVENT HANDLERS ─────────────────────────────────
   useEffect(() => {
@@ -329,7 +414,7 @@ export function useCallManager() {
         if (!stream) { logErr('Failed to get local stream'); return; }
 
         // Create PC as caller (impolite peer)
-        webrtc.createPeer(data.userId, true, stream);
+        webrtc.createPeer(data.userId, true, stream, 'direct');
       } catch (err) {
         logErr('onCallAccepted error:', err);
       }
@@ -382,7 +467,7 @@ export function useCallManager() {
 
       // Server will send group:peer-joined for each existing participant
       const socket = getSocket();
-      socket?.emit('group:join', { roomId: data.roomId });
+      socket?.emit(SOCKET_EVENTS.groupCall.join, { roomId: data.roomId });
     };
 
     const onGroupParticipants = (data: { participants: Array<{ id: string; displayName: string; avatar: string | null }> }) => {
@@ -396,7 +481,7 @@ export function useCallManager() {
           newP.set(p.id, p);
           return { ...prev, participants: newP };
         });
-        webrtc.createPeer(p.id, true, stream);
+        webrtc.createPeer(p.id, true, stream, 'group');
       }
     };
 
@@ -410,7 +495,7 @@ export function useCallManager() {
       });
       // New peer joined — they will be caller to us, so we are callee
       const stream = media.localStreamRef.current;
-      webrtc.createPeer(data.userId, false, stream);
+      webrtc.createPeer(data.userId, false, stream, 'group');
     };
 
     const onGroupPeerLeft = (data: { userId: string }) => {
@@ -451,44 +536,44 @@ export function useCallManager() {
     };
 
     // ── Register all events ──
-    socket.on('call:initiated', onCallInitiated);
-    socket.on('call:incoming', onIncomingCall);
-    socket.on('call:accepted', onCallAccepted);
-    socket.on('webrtc:offer', onOffer);
-    socket.on('webrtc:answer', onAnswer);
-    socket.on('webrtc:ice-candidate', onIceCandidate);
-    socket.on('call:ended', onCallEnded);
-    socket.on('call:declined', onCallDeclined);
-    socket.on('movie:select', onMovieSelect);
-    socket.on('movie:stop', onMovieStop);
-    socket.on('group:created', onGroupCreated);
-    socket.on('group:participants', onGroupParticipants);
-    socket.on('group:peer-joined', onGroupPeerJoined);
-    socket.on('group:peer-left', onGroupPeerLeft);
-    socket.on('group:offer', onGroupOffer);
-    socket.on('group:answer', onGroupAnswer);
-    socket.on('group:ice-candidate', onGroupIce);
-    socket.on('group:incoming', onGroupIncoming);
+    socket.on(SOCKET_EVENTS.call.initiated, onCallInitiated);
+    socket.on(SOCKET_EVENTS.call.incoming, onIncomingCall);
+    socket.on(SOCKET_EVENTS.call.accepted, onCallAccepted);
+    socket.on(SOCKET_EVENTS.webrtc.offer, onOffer);
+    socket.on(SOCKET_EVENTS.webrtc.answer, onAnswer);
+    socket.on(SOCKET_EVENTS.webrtc.iceCandidate, onIceCandidate);
+    socket.on(SOCKET_EVENTS.call.ended, onCallEnded);
+    socket.on(SOCKET_EVENTS.call.declined, onCallDeclined);
+    socket.on(SOCKET_EVENTS.watchTogether.selectMovie, onMovieSelect);
+    socket.on(SOCKET_EVENTS.watchTogether.stopMovie, onMovieStop);
+    socket.on(SOCKET_EVENTS.groupCall.created, onGroupCreated);
+    socket.on(SOCKET_EVENTS.groupCall.participants, onGroupParticipants);
+    socket.on(SOCKET_EVENTS.groupCall.peerJoined, onGroupPeerJoined);
+    socket.on(SOCKET_EVENTS.groupCall.peerLeft, onGroupPeerLeft);
+    socket.on(SOCKET_EVENTS.groupCall.offer, onGroupOffer);
+    socket.on(SOCKET_EVENTS.groupCall.answer, onGroupAnswer);
+    socket.on(SOCKET_EVENTS.groupCall.iceCandidate, onGroupIce);
+    socket.on(SOCKET_EVENTS.groupCall.incoming, onGroupIncoming);
 
     return () => {
-      socket.off('call:initiated', onCallInitiated);
-      socket.off('call:incoming', onIncomingCall);
-      socket.off('call:accepted', onCallAccepted);
-      socket.off('webrtc:offer', onOffer);
-      socket.off('webrtc:answer', onAnswer);
-      socket.off('webrtc:ice-candidate', onIceCandidate);
-      socket.off('call:ended', onCallEnded);
-      socket.off('call:declined', onCallDeclined);
-      socket.off('movie:select', onMovieSelect);
-      socket.off('movie:stop', onMovieStop);
-      socket.off('group:created', onGroupCreated);
-      socket.off('group:participants', onGroupParticipants);
-      socket.off('group:peer-joined', onGroupPeerJoined);
-      socket.off('group:peer-left', onGroupPeerLeft);
-      socket.off('group:offer', onGroupOffer);
-      socket.off('group:answer', onGroupAnswer);
-      socket.off('group:ice-candidate', onGroupIce);
-      socket.off('group:incoming', onGroupIncoming);
+      socket.off(SOCKET_EVENTS.call.initiated, onCallInitiated);
+      socket.off(SOCKET_EVENTS.call.incoming, onIncomingCall);
+      socket.off(SOCKET_EVENTS.call.accepted, onCallAccepted);
+      socket.off(SOCKET_EVENTS.webrtc.offer, onOffer);
+      socket.off(SOCKET_EVENTS.webrtc.answer, onAnswer);
+      socket.off(SOCKET_EVENTS.webrtc.iceCandidate, onIceCandidate);
+      socket.off(SOCKET_EVENTS.call.ended, onCallEnded);
+      socket.off(SOCKET_EVENTS.call.declined, onCallDeclined);
+      socket.off(SOCKET_EVENTS.watchTogether.selectMovie, onMovieSelect);
+      socket.off(SOCKET_EVENTS.watchTogether.stopMovie, onMovieStop);
+      socket.off(SOCKET_EVENTS.groupCall.created, onGroupCreated);
+      socket.off(SOCKET_EVENTS.groupCall.participants, onGroupParticipants);
+      socket.off(SOCKET_EVENTS.groupCall.peerJoined, onGroupPeerJoined);
+      socket.off(SOCKET_EVENTS.groupCall.peerLeft, onGroupPeerLeft);
+      socket.off(SOCKET_EVENTS.groupCall.offer, onGroupOffer);
+      socket.off(SOCKET_EVENTS.groupCall.answer, onGroupAnswer);
+      socket.off(SOCKET_EVENTS.groupCall.iceCandidate, onGroupIce);
+      socket.off(SOCKET_EVENTS.groupCall.incoming, onGroupIncoming);
     };
   }, [webrtc, media, cleanup, handlePeerGone, user?.id]);
 
@@ -510,10 +595,12 @@ export function useCallManager() {
     // Actions
     initiateCall,
     answerCall,
+    acceptIncomingCall,
     hangUp,
     rejectCall,
     startScreenShare,
     stopScreenShare,
+    toggleVideo,
     selectMovie,
     stopMovie,
     toggleMovieSearch,

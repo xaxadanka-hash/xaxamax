@@ -145,13 +145,13 @@ export default function SettingsPage() {
   );
 
   return (
-    <div className="h-full overflow-y-auto bg-dark-950">
+    <div className="h-full overflow-y-auto bg-dark-950 no-overscroll safe-bottom">
       {/* Header */}
-      <div className="sticky top-0 z-10 bg-dark-950/95 backdrop-blur-sm border-b border-dark-800/30 px-4 py-3">
+      <div className="sticky top-0 z-10 bg-dark-950/95 backdrop-blur-sm border-b border-dark-800/30 px-4 sm:px-6 py-3 safe-top">
         <h1 className="text-lg font-semibold text-white">Настройки</h1>
       </div>
 
-      <div className="px-4 pt-6 pb-32 max-w-lg mx-auto">
+      <div className="px-4 sm:px-6 pt-6 pb-[calc(6rem+env(safe-area-inset-bottom))] md:pb-16 max-w-2xl mx-auto">
         {/* Avatar + name */}
         <div className="flex flex-col items-center mb-8">
           <div className="relative mb-4">

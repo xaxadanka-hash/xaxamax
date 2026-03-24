@@ -11,12 +11,15 @@
 
   html, body, #root {
     height: 100%;
+    min-height: 100dvh;
     overflow: hidden;
   }
 
   body {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    background-color: #09090f;
+    overscroll-behavior: none;
   }
 
   ::-webkit-scrollbar {
@@ -82,6 +85,7 @@
   .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
   .safe-left   { padding-left:   env(safe-area-inset-left);   }
   .safe-right  { padding-right:  env(safe-area-inset-right);  }
+  .safe-x { padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
 
   /* Mirror local video (selfie) */
   .mirror { transform: scaleX(-1); }

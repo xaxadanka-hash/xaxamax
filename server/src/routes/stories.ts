@@ -1,14 +1,15 @@
 import { Router, Response } from 'express';
-import { prisma } from '../index';
+import { prisma } from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth';
 import path from 'path';
 import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
+import { env } from '../config/env';
 
 const router = Router();
 
-const uploadDir = process.env.UPLOAD_DIR || 'uploads';
+const uploadDir = env.UPLOAD_DIR;
 const storiesDir = path.join(uploadDir, 'stories');
 if (!fs.existsSync(storiesDir)) fs.mkdirSync(storiesDir, { recursive: true });
 

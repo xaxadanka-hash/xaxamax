@@ -49,7 +49,7 @@ export default function MainLayout() {
   const showMainSidebar = isChatsRoute && (!isMobile || showSidebar);
 
   return (
-    <div className="h-full flex flex-col bg-dark-950 overflow-hidden">
+    <div className="h-full min-h-dvh flex flex-col bg-dark-950 overflow-hidden no-overscroll">
       {/* ── TOP AREA (desktop: sidebar+content, mobile: full screen panels) ── */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
 
@@ -62,7 +62,7 @@ export default function MainLayout() {
               animate={{ x: 0 }}
               exit={{ x: -320 }}
               transition={{ type: 'spring', damping: 28, stiffness: 260 }}
-              className={`${isMobile ? 'absolute inset-0 z-30' : 'relative'} w-full md:w-80 lg:w-96 flex-shrink-0 ${isMobile ? 'pb-nav' : ''}`}
+              className={`${isMobile ? 'absolute inset-0 z-30' : 'relative'} w-full md:w-[22rem] lg:w-[24rem] xl:w-[26rem] flex-shrink-0 ${isMobile ? 'pb-nav' : ''}`}
             >
               <Sidebar onChatSelect={() => isMobile && setShowSidebar(false)} />
             </motion.div>
@@ -110,7 +110,7 @@ export default function MainLayout() {
       {/* ── BOTTOM NAVIGATION (mobile only) ── */}
       {isMobile && !activeChat && (
         <div
-          className="fixed bottom-0 left-0 right-0 z-40 flex items-stretch
+          className="fixed bottom-0 left-0 right-0 z-40 flex items-stretch px-2 safe-x
                      bg-dark-900/95 backdrop-blur-xl border-t border-dark-800/60"
           style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
         >
@@ -122,7 +122,7 @@ export default function MainLayout() {
               <button
                 key={path}
                 onClick={() => { navigate(path); setShowSidebar(true); }}
-                className={`flex-1 flex flex-col items-center justify-center py-2 gap-0.5 transition-colors
+                className={`tap-target flex-1 flex flex-col items-center justify-center py-2 gap-0.5 rounded-xl transition-colors
                   ${isActive ? 'text-primary-400' : 'text-dark-500 hover:text-dark-300'}`}
               >
                 <div className="relative">
