@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './store/authStore';
 import { useChatStore } from './store/chatStore';
 import { useChannelStore } from './store/channelStore';
+import { useNotificationStore } from './store/notificationStore';
 import { getSocket } from './services/socket';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
@@ -14,6 +15,7 @@ function App() {
   const { isAuthenticated, isLoading, checkAuth, user } = useAuthStore();
   const { addMessage, setTyping, applyEditedMessage, applyDeletedMessage, applyPinnedMessage, applyReaction } = useChatStore();
   const { addPost } = useChannelStore();
+  const { addNotification } = useNotificationStore();
 
   useEffect(() => {
     checkAuth();
@@ -38,6 +40,9 @@ function App() {
     socket.on('message:reaction', ({ messageId, userId: uid, emoji, reacted }) => {
       applyReaction(messageId, uid, emoji, reacted);
     });
+    socket.on('notification:new', (n) => {
+      addNotification(n);
+    });
 
     return () => {
       socket.off('message:new');
@@ -48,8 +53,9 @@ function App() {
       socket.off('message:pinned');
       socket.off('channel:new_post');
       socket.off('message:reaction');
+      socket.off('notification:new');
     };
-  }, [isAuthenticated, addMessage, setTyping, applyEditedMessage, applyDeletedMessage, applyPinnedMessage, applyReaction, addPost, user?.id]);
+  }, [isAuthenticated, addMessage, setTyping, applyEditedMessage, applyDeletedMessage, applyPinnedMessage, applyReaction, addNotification, addPost, user?.id]);
 
   if (isLoading) {
     return (

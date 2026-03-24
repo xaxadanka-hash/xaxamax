@@ -131,11 +131,38 @@ export function setupSocketHandlers(io: Server) {
         // Send delivery status
         socket.emit('message:status', { messageId: message.id, status: 'DELIVERED' });
 
-        // Push notifications to offline members
+        // In-app notifications + push for all other members
         const members = await prisma.chatMember.findMany({ where: { chatId: data.chatId, userId: { not: userId } } });
-        const offlineMembers = members.filter(m => !onlineUsers.has(m.userId) || onlineUsers.get(m.userId)!.size === 0);
         const sender = await prisma.user.findUnique({ where: { id: userId }, select: { displayName: true } });
         const pushBody = message.text ? message.text.slice(0, 100) : '📎 Медиафайл';
+
+        // Create in-app notifications for ALL members (read status tracked separately)
+        await prisma.notification.createMany({
+          data: members.map(m => ({
+            userId: m.userId,
+            type: 'MESSAGE' as const,
+            title: sender?.displayName || 'xaxamax',
+            body: pushBody,
+            data: { chatId: data.chatId, messageId: message.id },
+          })),
+          skipDuplicates: true,
+        });
+
+        // Emit real-time notification event to online members
+        members.forEach(m => {
+          const sockets = getUserSockets(m.userId);
+          sockets.forEach(sid => {
+            io.to(sid).emit('notification:new', {
+              type: 'MESSAGE',
+              title: sender?.displayName || 'xaxamax',
+              body: pushBody,
+              data: { chatId: data.chatId, messageId: message.id },
+            });
+          });
+        });
+
+        // Push to offline members
+        const offlineMembers = members.filter(m => !onlineUsers.has(m.userId) || onlineUsers.get(m.userId)!.size === 0);
         await Promise.allSettled(
           offlineMembers.map(m =>
             sendPushToUser(m.userId, {

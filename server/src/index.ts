@@ -18,6 +18,7 @@ import channelRoutes from './routes/channels';
 import pushRoutes from './routes/push';
 import storyRoutes from './routes/stories';
 import adminRoutes from './routes/admin';
+import notificationRoutes from './routes/notifications';
 import { setupSocketHandlers } from './socket';
 import { authMiddleware } from './middleware/auth';
 
@@ -62,6 +63,7 @@ app.use('/api/channels', authMiddleware, channelRoutes);
 app.use('/api/push', authMiddleware, pushRoutes);
 app.use('/api/stories', authMiddleware, storyRoutes);
 app.use('/api/admin', authMiddleware, adminRoutes);
+app.use('/api/notifications', authMiddleware, notificationRoutes);
 
 // Health check
 app.get('/api/health', (_req, res) => {

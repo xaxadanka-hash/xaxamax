@@ -104,3 +104,23 @@
 /* Bottom nav safe area — extra padding above home indicator */
 .pb-nav { padding-bottom: calc(60px + env(safe-area-inset-bottom)); }
 .mb-nav  { margin-bottom:  calc(60px + env(safe-area-inset-bottom)); }
+
+/* ── LIGHT THEME OVERRIDES ── */
+.light-theme {
+  background-color: #f0f2f5;
+  color: #1a1a1a;
+}
+.light-theme .bg-dark-950  { background-color: #f0f2f5 !important; }
+.light-theme .bg-dark-900  { background-color: #e4e7ec !important; }
+.light-theme .bg-dark-800  { background-color: #d9dde5 !important; }
+.light-theme .glass        { background: rgba(255,255,255,0.85) !important; backdrop-filter: blur(12px); border-color: rgba(0,0,0,0.08) !important; }
+.light-theme .text-white   { color: #1a1a1a !important; }
+.light-theme .text-dark-300 { color: #374151 !important; }
+.light-theme .text-dark-400 { color: #6b7280 !important; }
+.light-theme .text-dark-500 { color: #9ca3af !important; }
+.light-theme .border-dark-800 { border-color: rgba(0,0,0,0.1) !important; }
+.light-theme .chat-bubble-received { background: #ffffff !important; color: #1a1a1a !important; }
+.light-theme .chat-bubble-sent    { background: #3b82f6 !important; color: #ffffff !important; }
+.light-theme .sidebar-item        { color: #374151; }
+.light-theme .sidebar-item:hover  { background: rgba(0,0,0,0.06); }
+.light-theme .sidebar-item-active { background: rgba(59,130,246,0.12); color: #2563eb; }

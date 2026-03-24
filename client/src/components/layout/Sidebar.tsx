@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import CreateGroupModal from './CreateGroupModal';
 import StoryStrip from '../stories/StoryStrip';
+import NotificationBell from '../notifications/NotificationBell';
 import api from '../../services/api';
 
 interface SidebarProps {
@@ -83,6 +84,7 @@ export default function Sidebar({ onChatSelect }: SidebarProps) {
           >
             <Pencil className="w-5 h-5" />
           </button>
+          <NotificationBell />
           <button onClick={() => setShowMenu(!showMenu)} className="btn-ghost p-2 rounded-xl">
             <Settings className="w-5 h-5" />
           </button>

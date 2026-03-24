@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
+import { useThemeStore } from '../../store/themeStore';
 import { useAuthStore } from '../../store/authStore';
 import { useNavigate } from 'react-router-dom';
 import api from '../../services/api';
 import {
   Camera, LogOut, ChevronRight, Bell, Lock, Palette,
-  Phone, Info, Trash2, Check,
+  Phone, Info, Trash2, Check, Moon, Sun,
 } from 'lucide-react';
 
 export default function SettingsPage() {
@@ -18,6 +19,7 @@ export default function SettingsPage() {
   const [saved, setSaved] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [pushEnabled, setPushEnabled] = useState(false);
+  const { theme, toggle: toggleTheme } = useThemeStore();
   const [pushLoading, setPushLoading] = useState(false);
 
   useEffect(() => {
@@ -223,7 +225,19 @@ export default function SettingsPage() {
             </div>
           </button>
           <Row icon={Lock} label="Конфиденциальность" onClick={() => {}} />
-          <Row icon={Palette} label="Оформление" value="Тёмная" onClick={() => {}} />
+          <button
+            onClick={toggleTheme}
+            className="flex items-center gap-3 w-full px-4 py-3.5 border-b border-dark-800/30 hover:bg-dark-800/40 transition-colors"
+          >
+            <div className="w-8 h-8 rounded-lg bg-dark-700/60 flex items-center justify-center shrink-0">
+              {theme === 'dark' ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
+            </div>
+            <span className="flex-1 text-sm text-left text-dark-100">Оформление</span>
+            <span className="text-xs text-dark-400">{theme === 'dark' ? 'Тёмная' : 'Светлая'}</span>
+            <div className={`relative w-11 h-6 rounded-full transition-colors ml-2 ${theme === 'light' ? 'bg-primary-600' : 'bg-dark-600'}`}>
+              <div className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${theme === 'light' ? 'translate-x-6' : 'translate-x-1'}`} />
+            </div>
+          </button>
           <Row icon={Phone} label="Телефон" value={(user as any)?.phone || '—'} />
         </Section>
 
