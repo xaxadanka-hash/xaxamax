@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { MessageCircle, Newspaper, User, Settings, Hash, Shield } from 'lucide-react';
+import { MessageCircle, Newspaper, User, Settings, Hash, Users } from 'lucide-react';
 import Sidebar from './Sidebar';
 import ChatView from '../chat/ChatView';
 import FeedPage from '../feed/FeedPage';
@@ -8,12 +8,13 @@ import ProfilePage from '../profile/ProfilePage';
 import SettingsPage from '../settings/SettingsPage';
 import ChannelsPage from '../channels/ChannelsPage';
 import AdminDashboard from '../admin/AdminDashboard';
+import ContactsPage from '../contacts/ContactsPage';
 import { useChatStore } from '../../store/chatStore';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const NAV_ITEMS = [
   { path: '/', label: 'Чаты', icon: MessageCircle },
-  { path: '/channels', label: 'Каналы', icon: Hash },
+  { path: '/contacts', label: 'Контакты', icon: Users },
   { path: '/feed', label: 'Лента', icon: Newspaper },
   { path: '/profile', label: 'Профиль', icon: User },
   { path: '/settings', label: 'Настройки', icon: Settings },
@@ -77,6 +78,7 @@ export default function MainLayout() {
             <Route path="/channels" element={<ChannelsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/admin" element={<AdminDashboard />} />
+            <Route path="/contacts" element={<ContactsPage />} />
             <Route
               path="*"
               element={

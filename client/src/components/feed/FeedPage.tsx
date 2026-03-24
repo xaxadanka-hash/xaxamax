@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../store/authStore';
 import api from '../../services/api';
 import { formatDistanceToNow } from 'date-fns';
@@ -34,6 +35,7 @@ interface Comment {
 
 export default function FeedPage() {
   const { user } = useAuthStore();
+  const navigate = useNavigate();
   const [posts, setPosts] = useState<Post[]>([]);
   const [newPostText, setNewPostText] = useState('');
   const [loading, setLoading] = useState(true);
@@ -248,13 +250,16 @@ export default function FeedPage() {
             >
               {/* Post header */}
               <div className="flex items-center gap-3 mb-3">
-                <div className="w-10 h-10 rounded-full bg-dark-700 flex items-center justify-center text-sm font-medium flex-shrink-0">
+                <button
+                  onClick={() => navigate(`/profile/${post.author.id}`)}
+                  className="w-10 h-10 rounded-full bg-dark-700 flex items-center justify-center text-sm font-medium flex-shrink-0 overflow-hidden hover:ring-2 hover:ring-primary-500/50 transition-all"
+                >
                   {post.author.avatar
                     ? <img src={post.author.avatar} className="w-full h-full rounded-full object-cover" alt="" />
                     : getInitials(post.author.displayName)}
-                </div>
+                </button>
                 <div className="flex-1">
-                  <p className="text-sm font-semibold text-white">{post.author.displayName}</p>
+                  <button onClick={() => navigate(`/profile/${post.author.id}`)} className="text-sm font-semibold text-white hover:underline">{post.author.displayName}</button>
                   <p className="text-xs text-dark-500">{formatTime(post.createdAt)}</p>
                 </div>
                 {post.author.id === user?.id && (

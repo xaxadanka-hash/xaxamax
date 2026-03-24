@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useChatStore, type ChatMessage } from '../../store/chatStore';
 import { useAuthStore } from '../../store/authStore';
 import { getSocket } from '../../services/socket';
@@ -8,7 +9,7 @@ import { ru } from 'date-fns/locale';
 import {
   ArrowLeft, Send, Paperclip, Phone as PhoneIcon, Video,
   Monitor, Mic, X, Check, CheckCheck, Image, Pin, Reply as ReplyIcon,
-  Pencil, Users,
+  Pencil, Users, Search,
 } from 'lucide-react';
 import MessageContextMenu from './MessageContextMenu';
 import { VoiceRecorder, VoicePlayer } from './VoiceMessage';
@@ -38,6 +39,7 @@ export default function ChatView({ onBack }: ChatViewProps) {
     sendMessage, editMessage, deleteMessage, pinMessage, reactMessage,
   } = useChatStore();
   const { user } = useAuthStore();
+  const navigate = useNavigate();
 
   const [text, setText] = useState('');
   const [showAttach, setShowAttach] = useState(false);
@@ -47,6 +49,8 @@ export default function ChatView({ onBack }: ChatViewProps) {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [forwardState, setForwardState] = useState<ForwardState | null>(null);
   const [reactionPicker, setReactionPicker] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showSearch, setShowSearch] = useState(false);
 
   const REACTION_EMOJIS = ['👍', '❤️', '🔥', '😂', '😮', '👎'];
 
@@ -242,6 +246,9 @@ export default function ChatView({ onBack }: ChatViewProps) {
           </p>
         </div>
         <div className="flex items-center gap-1">
+          <button onClick={() => { setShowSearch(s => !s); setSearchQuery(''); }} className="btn-ghost p-2 rounded-xl" title="Поиск">
+            <Search className="w-5 h-5" />
+          </button>
           <button onClick={() => handleCall('AUDIO')} className="btn-ghost p-2 rounded-xl" title="Аудиозвонок">
             <PhoneIcon className="w-5 h-5" />
           </button>
@@ -255,6 +262,30 @@ export default function ChatView({ onBack }: ChatViewProps) {
           )}
         </div>
       </div>
+
+      {/* Search bar */}
+      {showSearch && (
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-dark-800/30 shrink-0">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-dark-500" />
+            <input
+              autoFocus
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="Поиск в сообщениях..."
+              className="w-full bg-dark-800/40 rounded-xl pl-9 pr-4 py-2 text-sm text-white placeholder:text-dark-500 focus:outline-none focus:ring-1 focus:ring-primary-500/30"
+            />
+          </div>
+          {searchQuery && (
+            <span className="text-xs text-dark-400">
+              {messages.filter(m => m.text?.toLowerCase().includes(searchQuery.toLowerCase())).length} нашлось
+            </span>
+          )}
+          <button onClick={() => { setShowSearch(false); setSearchQuery(''); }} className="p-1.5 text-dark-500 hover:text-white">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Pinned message banner */}
       {latestPinned && (
@@ -281,7 +312,10 @@ export default function ChatView({ onBack }: ChatViewProps) {
           </div>
         )}
 
-        {messages.map((msg) => {
+        {(searchQuery
+          ? messages.filter(m => m.text?.toLowerCase().includes(searchQuery.toLowerCase()))
+          : messages
+        ).map((msg) => {
           const isMine = msg.senderId === user?.id;
           const isDeleted = msg.deletedForAll || (msg as any).deletedAt;
 
@@ -303,17 +337,25 @@ export default function ChatView({ onBack }: ChatViewProps) {
             >
               {/* Sender avatar for group chats */}
               {isGroup && !isMine && (
-                <div className="w-7 h-7 rounded-full bg-dark-700 flex items-center justify-center text-xs font-medium mr-1.5 mt-auto mb-0.5 shrink-0 overflow-hidden">
+                <button
+                  onClick={() => navigate(`/profile/${msg.sender.id}`)}
+                  className="w-7 h-7 rounded-full bg-dark-700 flex items-center justify-center text-xs font-medium mr-1.5 mt-auto mb-0.5 shrink-0 overflow-hidden hover:ring-2 hover:ring-primary-500/50 transition-all"
+                >
                   {msg.sender.avatar
                     ? <img src={msg.sender.avatar} className="w-full h-full object-cover" alt="" />
                     : getInitials(msg.sender.displayName)}
-                </div>
+                </button>
               )}
 
               <div className={`max-w-[75%] md:max-w-[60%] ${isMine ? 'chat-bubble-sent' : 'chat-bubble-received'}`}>
                 {/* Group sender name */}
                 {isGroup && !isMine && (
-                  <p className="text-xs font-semibold text-primary-400 mb-0.5">{msg.sender.displayName}</p>
+                  <button
+                    onClick={() => navigate(`/profile/${msg.sender.id}`)}
+                    className="text-xs font-semibold text-primary-400 mb-0.5 hover:underline text-left"
+                  >
+                    {msg.sender.displayName}
+                  </button>
                 )}
 
                 {/* Forwarded from */}
