@@ -19,18 +19,22 @@ model User {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  messages       Message[]
-  chatMembers    ChatMember[]
-  contacts       Contact[]       @relation("userContacts")
-  contactOf      Contact[]       @relation("contactUser")
-  posts          Post[]
-  postLikes      PostLike[]
-  comments       Comment[]
-  commentLikes   CommentLike[]
-  callsInitiated Call[]          @relation("callInitiator")
-  callsReceived  CallParticipant[]
-  notifications  Notification[]
-  mediaFiles     Media[]
+  messages           Message[]
+  chatMembers        ChatMember[]
+  contacts           Contact[]            @relation("userContacts")
+  contactOf          Contact[]            @relation("contactUser")
+  posts              Post[]
+  postLikes          PostLike[]
+  comments           Comment[]
+  commentLikes       CommentLike[]
+  callsInitiated     Call[]               @relation("callInitiator")
+  callsReceived      CallParticipant[]
+  notifications      Notification[]
+  mediaFiles         Media[]
+  ownedChannels      Channel[]            @relation("channelOwner")
+  channelSubs        ChannelSubscriber[]
+  channelPosts       ChannelPost[]        @relation("channelPostAuthor")
+  channelReactions   ChannelPostReaction[]
 }
 
 model Contact {
@@ -143,6 +147,79 @@ model Media {
   post     Post?    @relation(fields: [postId], references: [id], onDelete: Cascade)
   comment  Comment? @relation(fields: [commentId], references: [id], onDelete: Cascade)
   uploader User     @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
+}
+
+// === CHANNELS ===
+
+model Channel {
+  id          String   @id @default(uuid())
+  slug        String   @unique
+  title       String
+  description String?
+  avatar      String?
+  ownerId     String
+  isPublic    Boolean  @default(true)
+  subscriberCount Int  @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner       User              @relation("channelOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  subscribers ChannelSubscriber[]
+  posts       ChannelPost[]
+}
+
+model ChannelSubscriber {
+  id         String   @id @default(uuid())
+  channelId  String
+  userId     String
+  joinedAt   DateTime @default(now())
+  isAdmin    Boolean  @default(false)
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, userId])
+}
+
+model ChannelPost {
+  id        String   @id @default(uuid())
+  channelId String
+  authorId  String
+  text      String?
+  viewCount Int      @default(0)
+  editedAt  DateTime?
+  deletedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  channel Channel     @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  author  User        @relation("channelPostAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  media   ChannelPostMedia[]
+  reactions ChannelPostReaction[]
+}
+
+model ChannelPostMedia {
+  id        String @id @default(uuid())
+  postId    String
+  url       String
+  mimeType  String
+  filename  String
+  size      Int
+
+  post ChannelPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+}
+
+model ChannelPostReaction {
+  id        String   @id @default(uuid())
+  postId    String
+  userId    String
+  emoji     String   @default("👍")
+  createdAt DateTime @default(now())
+
+  post ChannelPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, userId, emoji])
 }
 
 // === WALL / POSTS ===

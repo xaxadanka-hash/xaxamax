@@ -14,6 +14,7 @@ import chatRoutes from './routes/chats';
 import messageRoutes from './routes/messages';
 import postRoutes from './routes/posts';
 import mediaRoutes from './routes/media';
+import channelRoutes from './routes/channels';
 import { setupSocketHandlers } from './socket';
 import { authMiddleware } from './middleware/auth';
 
@@ -54,6 +55,7 @@ app.use('/api/chats', authMiddleware, chatRoutes);
 app.use('/api/messages', authMiddleware, messageRoutes);
 app.use('/api/posts', authMiddleware, postRoutes);
 app.use('/api/media', authMiddleware, mediaRoutes);
+app.use('/api/channels', authMiddleware, channelRoutes);
 
 // Health check
 app.get('/api/health', (_req, res) => {

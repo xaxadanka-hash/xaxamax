@@ -1,0 +1,32 @@
+{
+  "name": "xaxamax",
+  "short_name": "xaxamax",
+  "description": "xaxamax — мессенджер нового поколения",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#020617",
+  "orientation": "portrait-primary",
+  "lang": "ru",
+  "icons": [
+    {
+      "src": "/logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["social", "communication"],
+  "shortcuts": [
+    {
+      "name": "Чаты",
+      "url": "/",
+      "description": "Открыть список чатов"
+    },
+    {
+      "name": "Каналы",
+      "url": "/channels",
+      "description": "Открыть каналы"
+    }
+  ]
+}

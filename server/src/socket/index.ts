@@ -347,6 +347,20 @@ export function setupSocketHandlers(io: Server) {
       }
     });
 
+    // === CHANNEL NOTIFICATIONS ===
+    // Join channel rooms for subscribed channels on connect
+    (async () => {
+      try {
+        const subs = await prisma.channelSubscriber.findMany({ where: { userId } });
+        subs.forEach(sub => socket.join(`channel:${sub.channelId}`));
+      } catch { /* ignore */ }
+    })();
+
+    // Admin publishes a post → broadcast to all subscribers
+    socket.on('channel:post', (data: { channelId: string; post: any }) => {
+      io.to(`channel:${data.channelId}`).emit('channel:new_post', data);
+    });
+
     // === WATCH TOGETHER (movie sync) ===
     socket.on('movie:select', (data: { targetUserId: string; callId: string; movie: any }) => {
       try {

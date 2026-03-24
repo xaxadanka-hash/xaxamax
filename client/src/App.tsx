@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './store/authStore';
 import { useChatStore } from './store/chatStore';
+import { useChannelStore } from './store/channelStore';
 import { getSocket } from './services/socket';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
@@ -12,6 +13,7 @@ import { AnimatePresence } from 'framer-motion';
 function App() {
   const { isAuthenticated, isLoading, checkAuth, user } = useAuthStore();
   const { addMessage, setTyping, applyEditedMessage, applyDeletedMessage, applyPinnedMessage } = useChatStore();
+  const { addPost } = useChannelStore();
 
   useEffect(() => {
     checkAuth();
@@ -32,6 +34,7 @@ function App() {
     socket.on('message:pinned', ({ messageId, chatId, pinned }) => {
       applyPinnedMessage(messageId, chatId, pinned);
     });
+    socket.on('channel:new_post', ({ post }) => addPost(post));
 
     return () => {
       socket.off('message:new');
@@ -40,8 +43,9 @@ function App() {
       socket.off('message:edited');
       socket.off('message:deleted');
       socket.off('message:pinned');
+      socket.off('channel:new_post');
     };
-  }, [isAuthenticated, addMessage, setTyping, applyEditedMessage, applyDeletedMessage, applyPinnedMessage, user?.id]);
+  }, [isAuthenticated, addMessage, setTyping, applyEditedMessage, applyDeletedMessage, applyPinnedMessage, addPost, user?.id]);
 
   if (isLoading) {
     return (
