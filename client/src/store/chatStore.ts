@@ -44,12 +44,16 @@ interface ChatState {
   messages: ChatMessage[];
   isLoadingChats: boolean;
   isLoadingMessages: boolean;
+  isLoadingMore: boolean;
+  hasMore: boolean;
+  nextCursor: string | null;
   typingUsers: Map<string, Set<string>>;
   unreadCounts: Map<string, number>;
   totalUnread: number;
   fetchChats: () => Promise<void>;
   setActiveChat: (chat: Chat | null) => void;
   fetchMessages: (chatId: string) => Promise<void>;
+  loadMoreMessages: (chatId: string) => Promise<void>;
   sendMessage: (data: { chatId: string; text?: string; type?: string; replyToId?: string; mediaIds?: string[] }) => void;
   addMessage: (message: ChatMessage) => void;
   editMessage: (messageId: string, chatId: string, text: string) => void;
@@ -74,6 +78,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   isLoadingChats: false,
   isLoadingMessages: false,
+  isLoadingMore: false,
+  hasMore: false,
+  nextCursor: null,
   typingUsers: new Map(),
   unreadCounts: new Map(),
   totalUnread: 0,
@@ -90,7 +97,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setActiveChat: (chat) => {
-    set({ activeChat: chat, messages: [] });
+    set({ activeChat: chat, messages: [], nextCursor: null, hasMore: false });
     if (chat) {
       get().fetchMessages(chat.id);
       get().clearUnread(chat.id);
@@ -103,10 +110,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ isLoadingMessages: true });
     try {
       const { data } = await api.get(`/messages/${chatId}`);
-      set({ messages: data.messages, isLoadingMessages: false });
+      set({ messages: data.messages, isLoadingMessages: false, nextCursor: data.nextCursor, hasMore: !!data.nextCursor });
     } catch (err) {
       console.error('Fetch messages error:', err);
       set({ isLoadingMessages: false });
+    }
+  },
+
+  loadMoreMessages: async (chatId) => {
+    const { nextCursor, isLoadingMore } = get();
+    if (!nextCursor || isLoadingMore) return;
+    set({ isLoadingMore: true });
+    try {
+      const { data } = await api.get(`/messages/${chatId}?cursor=${nextCursor}`);
+      set(state => ({
+        messages: [...data.messages, ...state.messages],
+        nextCursor: data.nextCursor,
+        hasMore: !!data.nextCursor,
+        isLoadingMore: false,
+      }));
+    } catch (err) {
+      console.error('Load more messages error:', err);
+      set({ isLoadingMore: false });
     }
   },
 

@@ -35,8 +35,8 @@ interface ForwardState {
 
 export default function ChatView({ onBack }: ChatViewProps) {
   const {
-    activeChat, messages, isLoadingMessages,
-    sendMessage, editMessage, deleteMessage, pinMessage, reactMessage,
+    activeChat, messages, isLoadingMessages, isLoadingMore, hasMore,
+    sendMessage, editMessage, deleteMessage, pinMessage, reactMessage, loadMoreMessages,
   } = useChatStore();
   const { user } = useAuthStore();
   const navigate = useNavigate();
@@ -55,13 +55,32 @@ export default function ChatView({ onBack }: ChatViewProps) {
   const REACTION_EMOJIS = ['👍', '❤️', '🔥', '😂', '😮', '👎'];
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevScrollHeightRef = useRef<number>(0);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages.length === 0 ? 0 : messages[messages.length - 1]?.id]);
+
+  // Preserve scroll position when loading older messages
+  useEffect(() => {
+    if (!isLoadingMore && messagesContainerRef.current) {
+      const el = messagesContainerRef.current;
+      el.scrollTop = el.scrollHeight - prevScrollHeightRef.current;
+    }
+  }, [isLoadingMore]);
+
+  const handleScroll = useCallback(() => {
+    const el = messagesContainerRef.current;
+    if (!el || !hasMore || isLoadingMore || !activeChat) return;
+    if (el.scrollTop < 80) {
+      prevScrollHeightRef.current = el.scrollHeight;
+      loadMoreMessages(activeChat.id);
+    }
+  }, [hasMore, isLoadingMore, activeChat, loadMoreMessages]);
 
   // Focus input when entering edit mode
   useEffect(() => {
@@ -305,7 +324,17 @@ export default function ChatView({ onBack }: ChatViewProps) {
       )}
 
       {/* ── MESSAGES ── */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-1">
+      <div
+        ref={messagesContainerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto px-4 py-3 space-y-1"
+      >
+        {/* Load-more spinner */}
+        {isLoadingMore && (
+          <div className="flex justify-center py-2">
+            <div className="w-5 h-5 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
+          </div>
+        )}
         {isLoadingMessages && (
           <div className="flex justify-center py-4">
             <div className="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
