@@ -44,14 +44,15 @@ export function useMediaStreams(): UseMediaStreamsReturn {
 
   // ─── GET CAMERA/MIC ────────────────────────────────────────
   const getLocalMedia = useCallback(async (type: CallMediaType): Promise<MediaStream | null> => {
-    try {
-      const constraints: MediaStreamConstraints = {
+    const wantsVideo = type === 'VIDEO' || type === 'SCREEN_SHARE';
+    const attempts: MediaStreamConstraints[] = [
+      {
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
         },
-        video: type === 'VIDEO' || type === 'SCREEN_SHARE'
+        video: wantsVideo
           ? {
               width: { ideal: 1280 },
               height: { ideal: 720 },
@@ -59,19 +60,41 @@ export function useMediaStreams(): UseMediaStreamsReturn {
               facingMode: 'user',
             }
           : false,
-      };
+      },
+      {
+        audio: true,
+        video: wantsVideo ? { facingMode: 'user' } : false,
+      },
+      {
+        audio: true,
+        video: wantsVideo,
+      },
+      {
+        audio: true,
+        video: false,
+      },
+    ];
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      localStreamRef.current = stream;
-      setHasLocalStream(true);
-      setIsMuted(false);
-      setIsVideoOff(false);
-      log('Got local media:', stream.getTracks().map(t => `${t.kind}:${t.label}`).join(', '));
-      return stream;
-    } catch (err) {
-      logErr('getUserMedia error:', err);
-      return null;
+    let lastError: unknown = null;
+
+    for (let i = 0; i < attempts.length; i += 1) {
+      const constraints = attempts[i];
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        localStreamRef.current = stream;
+        setHasLocalStream(true);
+        setIsMuted(false);
+        setIsVideoOff(stream.getVideoTracks().length === 0);
+        log('Got local media:', stream.getTracks().map(t => `${t.kind}:${t.label}`).join(', '));
+        return stream;
+      } catch (err) {
+        lastError = err;
+        logErr(`getUserMedia attempt ${i + 1} failed:`, err);
+      }
     }
+
+    logErr('getUserMedia error:', lastError);
+    return null;
   }, []);
 
   // ─── GET SCREEN SHARE ──────────────────────────────────────

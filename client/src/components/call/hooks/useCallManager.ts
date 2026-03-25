@@ -323,15 +323,17 @@ export function useCallManager() {
     const c = callRef.current;
     if (!c.callId || !c.remoteUserId) return;
 
-    const stream = await media.getLocalMedia(c.type);
-    if (!stream) return;
-
-    // Create PC as callee (polite peer)
-    webrtc.createPeer(c.remoteUserId, false, stream, 'direct');
-
     setCall(prev => ({ ...prev, isIncoming: false, mode: 'CONNECTING' }));
     const socket = getSocket();
     socket?.emit(SOCKET_EVENTS.call.accept, { callId: c.callId });
+
+    const stream = await media.getLocalMedia(c.type);
+    if (!stream) {
+      logErr('No local stream for answerCall; continuing in receive-only mode');
+    }
+
+    // Create PC as callee (polite peer)
+    webrtc.createPeer(c.remoteUserId, false, stream, 'direct');
   }, [webrtc, media]);
 
   // ─── INITIATE GROUP CALL ───────────────────────────────────
@@ -418,7 +420,9 @@ export function useCallManager() {
         setCall(prev => ({ ...prev, mode: 'CONNECTING', remoteUserId: data.userId }));
 
         const stream = await media.getLocalMedia(c.type);
-        if (!stream) { logErr('Failed to get local stream'); return; }
+        if (!stream) {
+          logErr('Failed to get local stream on caller side; continuing in receive-only mode');
+        }
 
         // Create PC as caller (impolite peer)
         webrtc.createPeer(data.userId, true, stream, 'direct');

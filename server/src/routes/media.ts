@@ -85,6 +85,25 @@ const runUpload = (
   });
 });
 
+const buildMediaUrl = (filePath: string): string => {
+  const uploadRoot = path.resolve(uploadDir);
+  const absoluteFilePath = path.resolve(filePath);
+  const relativePath = path.relative(uploadRoot, absoluteFilePath).replace(/\\/g, '/');
+  if (!relativePath.startsWith('..') && !path.isAbsolute(relativePath)) {
+    return `/uploads/${relativePath.replace(/^\/+/, '')}`;
+  }
+
+  const normalizedFilePath = absoluteFilePath.replace(/\\/g, '/');
+  const uploadMarker = `/${path.basename(uploadRoot)}/`;
+  const markerIndex = normalizedFilePath.lastIndexOf(uploadMarker);
+  if (markerIndex !== -1) {
+    const tail = normalizedFilePath.slice(markerIndex + uploadMarker.length);
+    return `/uploads/${tail.replace(/^\/+/, '')}`;
+  }
+
+  return `/uploads/${path.basename(absoluteFilePath)}`;
+};
+
 const router = Router();
 
 // Upload file
@@ -97,8 +116,7 @@ router.post('/upload', async (req: AuthRequest, res: Response) => {
       ? Number.parseFloat(req.body.duration)
       : undefined;
 
-    const relativePath = file.path.replace(uploadDir, '').replace(/\\/g, '/');
-    const url = `/uploads${relativePath}`;
+    const url = buildMediaUrl(file.path);
 
     const media = await prisma.media.create({
       data: {
@@ -133,8 +151,7 @@ router.post('/upload-multiple', async (req: AuthRequest, res: Response) => {
 
     const mediaItems = await Promise.all(
       files.map(async (file, index) => {
-        const relativePath = file.path.replace(uploadDir, '').replace(/\\/g, '/');
-        const url = `/uploads${relativePath}`;
+        const url = buildMediaUrl(file.path);
         const parsedDuration = Number.parseFloat(durations[index] || '');
         return prisma.media.create({
           data: {
